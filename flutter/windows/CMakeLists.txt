@@ -107,6 +107,17 @@ set(RUSTDESK_LIB "../../target/${RUSTDESK_LIB_BUILD_TYPE}/librustdesk.dll")
 install(FILES "${RUSTDESK_LIB}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
 COMPONENT Runtime RENAME librustdesk.dll)
 
+# Opt-in for local dev: set RUSTDESK_CARGO_FEATURES (e.g. "flutter") and
+# `flutter build windows` runs cargo first, so the copied dll is never stale.
+# Unset (CI, build.py), the dll is expected to be prebuilt as before.
+if(DEFINED ENV{RUSTDESK_CARGO_FEATURES})
+  add_custom_target(rustdesk_lib ALL
+    COMMAND cargo build --lib --features "$ENV{RUSTDESK_CARGO_FEATURES}" $<$<NOT:$<CONFIG:Debug>>:--release>
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+    USES_TERMINAL)
+  add_dependencies(${BINARY_NAME} rustdesk_lib)
+endif()
+
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.
 set(FLUTTER_ASSET_DIR_NAME "flutter_assets")
