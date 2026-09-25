@@ -2580,7 +2580,9 @@ class _ToolsState extends State<_Tools> {
         child: Column(
           children: [
             _Card(title: translate('Tools'), children: [
-              Column(
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const SizedBox(height: 8.0),
@@ -2600,7 +2602,8 @@ class _ToolsState extends State<_Tools> {
                     child: Text(translate('Copy')),
                   ).marginSymmetric(vertical: 4.0),
                 ],
-              ).marginOnly(left: _kContentHMargin)
+              ).marginOnly(left: _kContentHMargin),
+              ),
             ]),
             _Card(title: translate('Inventory'), children: [
               _buildInventory(inventory),
