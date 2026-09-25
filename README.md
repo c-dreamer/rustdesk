@@ -169,6 +169,7 @@ Please ensure that you run these commands from the root of the RustDesk reposito
 - **[src/rendezvous_mediator.rs](https://github.com/rustdesk/rustdesk/tree/master/src/rendezvous_mediator.rs)**: Communicate with [rustdesk-server](https://github.com/rustdesk/rustdesk-server), wait for remote direct (TCP hole punching) or relayed connection
 - **[src/platform](https://github.com/rustdesk/rustdesk/tree/master/src/platform)**: platform specific code
 - **[flutter](https://github.com/rustdesk/rustdesk/tree/master/flutter)**: Flutter code for desktop and mobile
+- **[res/psh](https://github.com/rustdesk/rustdesk/tree/master/res/psh)**: PowerShell wrappers around the `rustdesk.exe` CLI flags, for scripted deployment on Windows
 
 ## Screenshots
 

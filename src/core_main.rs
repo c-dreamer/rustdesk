@@ -476,6 +476,15 @@ pub fn core_main() -> Option<Vec<String>> {
         } else if args[0] == "--get-id" {
             println!("{}", crate::ipc::get_id());
             return None;
+        } else if args[0] == "--status" {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "id": crate::ipc::get_id(),
+                    "version": crate::VERSION,
+                })
+            );
+            return None;
         } else if args[0] == "--set-id" {
             if is_cli_setting_change_disabled() {
                 println!("Settings are disabled!");
@@ -537,6 +546,92 @@ pub fn core_main() -> Option<Vec<String>> {
                 }
             } else {
                 println!("Installation and administrative privileges required!");
+            }
+            return None;
+        } else if args[0] == "--list-options" {
+            if crate::platform::is_installed() && is_root() {
+                println!(
+                    "{}",
+                    serde_json::to_string(&crate::ipc::get_options()).unwrap_or_default()
+                );
+            } else {
+                println!("Installation and administrative privileges required!");
+            }
+            return None;
+        } else if args[0] == "--list-peers" {
+            let peers: Vec<_> = config::PeerConfig::peers(None)
+                .drain(..)
+                .map(|(id, _, p)| {
+                    serde_json::json!({
+                        "id": id,
+                        "username": p.info.username,
+                        "hostname": p.info.hostname,
+                        "platform": p.info.platform,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string(&peers).unwrap_or_default());
+            return None;
+        } else if args[0] == "--inventory" {
+            println!(
+                "{}",
+                serde_json::to_string(&crate::rmm::inventory::snapshot()).unwrap_or_default()
+            );
+            return None;
+        } else if args[0] == "--alerts-status" {
+            let options = crate::ipc::get_options();
+            let threshold_keys = [
+                "rmm-monitor-enabled",
+                "rmm-cpu-threshold",
+                "rmm-mem-threshold",
+                "rmm-disk-threshold",
+                "rmm-watch-services",
+            ];
+            let thresholds: std::collections::HashMap<_, _> = threshold_keys
+                .iter()
+                .map(|k| (k.to_string(), options.get(*k).cloned().unwrap_or_default()))
+                .collect();
+            let recent_alerts: Vec<String> =
+                std::fs::read_to_string(crate::rmm::monitor::alerts_log_path())
+                    .unwrap_or_default()
+                    .lines()
+                    .rev()
+                    .take(20)
+                    .map(str::to_owned)
+                    .collect();
+            println!(
+                "{}",
+                serde_json::json!({"config": thresholds, "recent_alerts": recent_alerts})
+            );
+            return None;
+        } else if args[0] == "--list-scripts" {
+            println!("{}", crate::rmm::scripts::list());
+            return None;
+        } else if args[0] == "--run-script" {
+            if is_cli_setting_change_disabled() {
+                println!("Settings are disabled!");
+                return None;
+            }
+            if args.len() == 2 {
+                match crate::rmm::scripts::run(&args[1]) {
+                    Ok(output) => println!("{}", output),
+                    Err(err) => println!("{}", err),
+                }
+            }
+            return None;
+        } else if args[0] == "--add-script" {
+            if is_cli_setting_change_disabled() {
+                println!("Settings are disabled!");
+                return None;
+            }
+            if args.len() == 3 {
+                match std::fs::read_to_string(&args[2]) {
+                    Ok(body) => match crate::rmm::scripts::add(&args[1], &body) {
+                        Ok(()) => println!("Done!"),
+                        Err(err) => println!("{}", err),
+                    },
+                    Err(err) => println!("Failed to read {}: {}", args[2], err),
+                }
             }
             return None;
         } else if args[0] == "--assign" {
@@ -883,6 +978,7 @@ fn is_user_main_ipc_scope_cli_command(args: &[String]) -> bool {
             | Some("--set-id")
             | Some("--config")
             | Some("--option")
+            | Some("--list-options")
             | Some("--assign")
             | Some("--deploy")
     )
@@ -930,6 +1026,7 @@ mod tests {
             "--set-id",
             "--config",
             "--option",
+            "--list-options",
             "--assign",
             "--deploy",
         ] {
@@ -943,6 +1040,8 @@ mod tests {
             "--cm",
             "--check-hwcodec-config",
             "--connect",
+            "--status",
+            "--list-peers",
         ] {
             assert!(!is_user_main_ipc_scope_cli_command(&args(&[command])));
         }

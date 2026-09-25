@@ -1063,6 +1063,45 @@ pub fn main_set_options(json: String) {
     }
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_rmm_inventory() -> String {
+    crate::rmm::inventory::snapshot().to_string()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_rmm_recent_alerts() -> String {
+    let recent_alerts: Vec<String> =
+        std::fs::read_to_string(crate::rmm::monitor::alerts_log_path())
+            .unwrap_or_default()
+            .lines()
+            .rev()
+            .take(20)
+            .map(str::to_owned)
+            .collect();
+    serde_json::json!(recent_alerts).to_string()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_rmm_list_scripts() -> String {
+    crate::rmm::scripts::list().to_string()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_rmm_add_script(name: String, body: String) -> String {
+    match crate::rmm::scripts::add(&name, &body) {
+        Ok(()) => "".to_owned(),
+        Err(err) => err.to_string(),
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_rmm_run_script(name: String) -> String {
+    match crate::rmm::scripts::run(&name) {
+        Ok(output) => output,
+        Err(err) => format!("Error: {err}"),
+    }
+}
+
 pub fn main_test_if_valid_server(server: String, test_with_proxy: bool) -> String {
     test_if_valid_server(server, test_with_proxy)
 }

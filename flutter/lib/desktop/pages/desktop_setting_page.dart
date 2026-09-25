@@ -55,6 +55,7 @@ enum SettingsTabKey {
   display,
   account,
   printer,
+  tools,
   about,
 }
 
@@ -77,6 +78,7 @@ class DesktopSettingPage extends StatefulWidget {
         !bind.isDisableSettings() &&
         bind.mainGetBuildinOption(key: kOptionHideRemotePrinterSetting) != 'Y')
       SettingsTabKey.printer,
+    SettingsTabKey.tools,
     SettingsTabKey.about,
   ];
 
@@ -208,6 +210,10 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           settingTabs
               .add(_TabInfo(tab, 'Printer', Icons.print_outlined, Icons.print));
           break;
+        case SettingsTabKey.tools:
+          settingTabs.add(
+              _TabInfo(tab, 'Tools', Icons.build_outlined, Icons.build));
+          break;
         case SettingsTabKey.about:
           settingTabs
               .add(_TabInfo(tab, 'About', Icons.info_outline, Icons.info));
@@ -238,6 +244,9 @@ class _DesktopSettingPageState extends State<DesktopSettingPage>
           break;
         case SettingsTabKey.printer:
           children.add(const _Printer());
+          break;
+        case SettingsTabKey.tools:
+          children.add(const _Tools());
           break;
         case SettingsTabKey.about:
           children.add(const _About());
@@ -2496,6 +2505,318 @@ class __PrinterState extends State<_Printer> {
         enabled: printerOptions.action != kValuePrinterIncomingJobDismiss,
       )
     ]);
+  }
+}
+
+class _Tools extends StatefulWidget {
+  const _Tools({Key? key}) : super(key: key);
+
+  @override
+  State<_Tools> createState() => _ToolsState();
+}
+
+class _ToolsState extends State<_Tools> {
+  final _cpuThresholdCtrl = TextEditingController();
+  final _memThresholdCtrl = TextEditingController();
+  final _diskThresholdCtrl = TextEditingController();
+  final _watchServicesCtrl = TextEditingController();
+
+  @override
+  void dispose() {
+    _cpuThresholdCtrl.dispose();
+    _memThresholdCtrl.dispose();
+    _diskThresholdCtrl.dispose();
+    _watchServicesCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return futureBuilder(future: () async {
+      final myId = await bind.mainGetMyId();
+      final version = await bind.mainGetVersion();
+      Map<String, dynamic> options = {};
+      try {
+        options = jsonDecode(await bind.mainGetOptions());
+      } catch (_) {}
+      Map<String, dynamic> inventory = {};
+      try {
+        inventory = jsonDecode(await bind.mainRmmInventory());
+      } catch (_) {}
+      List<String> recentAlerts = [];
+      try {
+        recentAlerts =
+            (jsonDecode(await bind.mainRmmRecentAlerts()) as List).cast<String>();
+      } catch (_) {}
+      List<dynamic> scripts = [];
+      try {
+        scripts = jsonDecode(await bind.mainRmmListScripts()) as List<dynamic>;
+      } catch (_) {}
+      return {
+        'myId': myId,
+        'version': version,
+        'options': options,
+        'inventory': inventory,
+        'recentAlerts': recentAlerts,
+        'scripts': scripts,
+      };
+    }(), hasData: (data) {
+      final myId = data['myId'].toString();
+      final version = data['version'].toString();
+      final options = data['options'] as Map<String, dynamic>;
+      final inventory = data['inventory'] as Map<String, dynamic>;
+      final recentAlerts = data['recentAlerts'] as List<String>;
+      final scripts = data['scripts'] as List<dynamic>;
+      final diagnostics =
+          'ID: $myId\nVersion: $version\nOptions: ${jsonEncode(options)}';
+      final monitorEnabled = options['rmm-monitor-enabled'] == 'Y';
+      final scriptsEnabled = options['rmm-scripts-enabled'] == 'Y';
+      _cpuThresholdCtrl.text = options['rmm-cpu-threshold']?.toString() ?? '';
+      _memThresholdCtrl.text = options['rmm-mem-threshold']?.toString() ?? '';
+      _diskThresholdCtrl.text = options['rmm-disk-threshold']?.toString() ?? '';
+      _watchServicesCtrl.text = options['rmm-watch-services']?.toString() ?? '';
+
+      return SingleChildScrollView(
+        child: Column(
+          children: [
+            _Card(title: translate('Tools'), children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 8.0),
+                  SelectionArea(
+                      child: Text('${translate('ID')}: $myId')
+                          .marginSymmetric(vertical: 4.0)),
+                  SelectionArea(
+                      child: Text('${translate('Version')}: $version')
+                          .marginSymmetric(vertical: 4.0)),
+                  SelectionArea(
+                      child: Text('Options: ${jsonEncode(options)}')
+                          .marginSymmetric(vertical: 4.0)),
+                  ElevatedButton(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: diagnostics));
+                    },
+                    child: Text(translate('Copy')),
+                  ).marginSymmetric(vertical: 4.0),
+                ],
+              ).marginOnly(left: _kContentHMargin)
+            ]),
+            _Card(title: translate('Inventory'), children: [
+              _buildInventory(inventory),
+            ]),
+            _Card(title: translate('Monitoring'), children: [
+              _buildMonitoring(monitorEnabled, recentAlerts),
+            ]),
+            _Card(title: translate('Scripts'), children: [
+              _buildScripts(scripts, scriptsEnabled),
+            ]),
+            _Card(title: translate('Peers'), children: [
+              Text(translate(
+                      'To run commands on a connected remote machine, use the Terminal connection type from the Connect page.'))
+                  .marginOnly(left: _kContentHMargin, bottom: 8.0),
+            ]),
+          ],
+        ),
+      );
+    });
+  }
+
+  Widget _buildInventory(Map<String, dynamic> inventory) {
+    final software = (inventory['installed_software'] as List<dynamic>?) ?? [];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8.0),
+        SelectionArea(
+            child: Text('${translate('Hostname')}: ${inventory['hostname'] ?? ''}')
+                .marginSymmetric(vertical: 4.0)),
+        SelectionArea(
+            child: Text('OS: ${inventory['os'] ?? ''}')
+                .marginSymmetric(vertical: 4.0)),
+        SelectionArea(
+            child: Text('CPU: ${inventory['cpu'] ?? ''}')
+                .marginSymmetric(vertical: 4.0)),
+        SelectionArea(
+            child: Text(
+                    '${translate('Memory')}: ${inventory['memory'] ?? ''}')
+                .marginSymmetric(vertical: 4.0)),
+        ExpansionTile(
+          title: Text(
+              '${translate('Installed software')} (${software.length})'),
+          tilePadding: EdgeInsets.zero,
+          children: software
+              .map((s) => ListTile(
+                    dense: true,
+                    title: Text('${s['name']}'),
+                    trailing: Text('${s['version'] ?? ''}'),
+                  ))
+              .toList(),
+        ),
+      ],
+    ).marginOnly(left: _kContentHMargin);
+  }
+
+  Widget _buildMonitoring(bool monitorEnabled, List<String> recentAlerts) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8.0),
+        Row(
+          children: [
+            Switch(
+              value: monitorEnabled,
+              onChanged: (v) async {
+                await bind.mainSetOption(
+                    key: 'rmm-monitor-enabled', value: v ? 'Y' : 'N');
+                setState(() {});
+              },
+            ),
+            Text(translate('Enable monitoring')),
+          ],
+        ),
+        Row(
+          children: [
+            Expanded(
+                child: TextField(
+              controller: _cpuThresholdCtrl,
+              decoration: InputDecoration(labelText: translate('CPU %')),
+              keyboardType: TextInputType.number,
+            )),
+            const SizedBox(width: 8.0),
+            Expanded(
+                child: TextField(
+              controller: _memThresholdCtrl,
+              decoration: InputDecoration(labelText: translate('Memory %')),
+              keyboardType: TextInputType.number,
+            )),
+            const SizedBox(width: 8.0),
+            Expanded(
+                child: TextField(
+              controller: _diskThresholdCtrl,
+              decoration: InputDecoration(labelText: translate('Disk %')),
+              keyboardType: TextInputType.number,
+            )),
+          ],
+        ).marginSymmetric(vertical: 4.0),
+        TextField(
+          controller: _watchServicesCtrl,
+          decoration: InputDecoration(
+              labelText: translate('Watched services (comma-separated)')),
+        ).marginSymmetric(vertical: 4.0),
+        ElevatedButton(
+          onPressed: () async {
+            await bind.mainSetOption(
+                key: 'rmm-cpu-threshold', value: _cpuThresholdCtrl.text.trim());
+            await bind.mainSetOption(
+                key: 'rmm-mem-threshold', value: _memThresholdCtrl.text.trim());
+            await bind.mainSetOption(
+                key: 'rmm-disk-threshold',
+                value: _diskThresholdCtrl.text.trim());
+            await bind.mainSetOption(
+                key: 'rmm-watch-services',
+                value: _watchServicesCtrl.text.trim());
+            setState(() {});
+          },
+          child: Text(translate('Save')),
+        ).marginSymmetric(vertical: 4.0),
+        const SizedBox(height: 8.0),
+        Text(translate('Recent alerts'),
+            style: const TextStyle(fontWeight: FontWeight.bold)),
+        if (recentAlerts.isEmpty)
+          Text(translate('No alerts')).marginSymmetric(vertical: 4.0)
+        else
+          ...recentAlerts.map((a) => SelectionArea(
+              child: Text(a).marginSymmetric(vertical: 2.0))),
+      ],
+    ).marginOnly(left: _kContentHMargin);
+  }
+
+  Widget _buildScripts(List<dynamic> scripts, bool scriptsEnabled) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 8.0),
+        Row(
+          children: [
+            Switch(
+              value: scriptsEnabled,
+              onChanged: (v) async {
+                await bind.mainSetOption(
+                    key: 'rmm-scripts-enabled', value: v ? 'Y' : 'N');
+                setState(() {});
+              },
+            ),
+            Text(translate('Enable scheduled scripts')),
+          ],
+        ),
+        ...scripts.map((s) => ListTile(
+              dense: true,
+              title: Text('${s['name']}'),
+              subtitle: s['schedule_secs'] != null
+                  ? Text('${translate('every')} ${s['schedule_secs']}s')
+                  : null,
+              trailing: ElevatedButton(
+                onPressed: () async {
+                  final output =
+                      await bind.mainRmmRunScript(name: s['name'].toString());
+                  if (!mounted) return;
+                  showToast(output.isEmpty ? translate('Done!') : output);
+                  setState(() {});
+                },
+                child: Text(translate('Run')),
+              ),
+            )),
+        ElevatedButton(
+          onPressed: () => _showAddScriptDialog(),
+          child: Text(translate('Add script')),
+        ).marginSymmetric(vertical: 4.0),
+      ],
+    ).marginOnly(left: _kContentHMargin);
+  }
+
+  void _showAddScriptDialog() {
+    final nameCtrl = TextEditingController();
+    final bodyCtrl = TextEditingController();
+    gFFI.dialogManager.show((dlgSetState, close, context) {
+      return CustomAlertDialog(
+        title: Text(translate('Add script')),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: nameCtrl,
+                decoration: InputDecoration(labelText: translate('Name')),
+              ),
+              const SizedBox(height: 8.0),
+              TextField(
+                controller: bodyCtrl,
+                decoration: InputDecoration(
+                    labelText: translate('PowerShell / shell body')),
+                maxLines: 8,
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          dialogButton('Cancel', onPressed: close, isOutline: true),
+          dialogButton('OK', onPressed: () async {
+            final name = nameCtrl.text.trim();
+            if (name.isEmpty) return;
+            final err = await bind.mainRmmAddScript(
+                name: name, body: bodyCtrl.text);
+            if (err.isNotEmpty) {
+              showToast(err);
+            }
+            close();
+            setState(() {});
+          }),
+        ],
+      );
+    });
   }
 }
 

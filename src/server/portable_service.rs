@@ -447,6 +447,19 @@ pub mod server {
     }
 
     pub fn run_portable_service() {
+        let _local_mouse_observer = if hbb_common::config::Config::get_bool_option(
+            crate::platform::windows::local_input::LOCAL_INPUT_PRIORITY_OPTION,
+        ) {
+            match crate::platform::windows::local_input::start_local_mouse_observer() {
+                Ok(observer) => Some(observer),
+                Err(err) => {
+                    log::warn!("Local mouse priority is unavailable: {}", err);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let shmem_name = match portable_service_shmem_name_from_args() {
             Some(name) => name,
             None => {
