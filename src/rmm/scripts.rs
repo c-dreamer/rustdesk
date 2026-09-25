@@ -16,43 +16,85 @@ pub struct Script {
     pub schedule_secs: Option<u64>,
 }
 
-fn load() -> HashMap<String, Script> {
-    let Ok(content) = std::fs::read_to_string(Config::path(SCRIPTS_FILE)) else {
-        return HashMap::new();
-    };
-    serde_json::from_str(&content).unwrap_or_default()
+/// When installed, the scheduler runs in the SYSTEM server process, whose config dir is
+/// the LocalService profile. Every caller must use that same file, and its ACL (admins
+/// and SYSTEM only) is what stops a standard user queueing a script that runs as SYSTEM.
+fn store_path() -> std::path::PathBuf {
+    #[cfg(windows)]
+    if crate::platform::is_installed() {
+        if let Some(path) = service_store_path() {
+            return path;
+        }
+    }
+    Config::path(SCRIPTS_FILE)
+}
+
+#[cfg(windows)]
+fn service_store_path() -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    let mut buffer = vec![0u16; 260];
+    let len = unsafe { GetSystemDirectoryW(Some(&mut buffer)) } as usize;
+    if len == 0 || len >= buffer.len() {
+        return None;
+    }
+    buffer.truncate(len);
+    let system32 = std::path::PathBuf::from(std::ffi::OsString::from_wide(&buffer));
+    let mut path = system32.parent()?.to_path_buf();
+    path.push(r"ServiceProfiles\LocalService\AppData\Roaming");
+    path.push(hbb_common::config::APP_NAME.read().unwrap().as_str());
+    path.push("config");
+    path.push(SCRIPTS_FILE);
+    Some(path)
+}
+
+fn load() -> ResultType<HashMap<String, Script>> {
+    match std::fs::read_to_string(store_path()) {
+        Ok(content) => Ok(serde_json::from_str(&content).unwrap_or_default()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
+        Err(err) => Err(access_error(err)),
+    }
+}
+
+fn access_error(err: std::io::Error) -> hbb_common::anyhow::Error {
+    if err.kind() == std::io::ErrorKind::PermissionDenied {
+        anyhow!("Administrator privileges required to use the script library")
+    } else {
+        err.into()
+    }
 }
 
 fn save(scripts: &HashMap<String, Script>) -> ResultType<()> {
-    std::fs::write(
-        Config::path(SCRIPTS_FILE),
-        serde_json::to_string_pretty(scripts)?,
-    )?;
+    let path = store_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(access_error)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(scripts)?).map_err(access_error)?;
     Ok(())
 }
 
-pub fn add(name: &str, body: &str) -> ResultType<()> {
-    let mut scripts = load();
+pub fn add(name: &str, body: &str, schedule_secs: Option<u64>) -> ResultType<()> {
+    let mut scripts = load()?;
     scripts.insert(
         name.to_owned(),
         Script {
             body: body.to_owned(),
-            schedule_secs: None,
+            schedule_secs,
         },
     );
     save(&scripts)
 }
 
-pub fn list() -> Value {
-    let names: Vec<_> = load()
+pub fn list() -> ResultType<Value> {
+    let names: Vec<_> = load()?
         .into_iter()
         .map(|(name, s)| json!({"name": name, "schedule_secs": s.schedule_secs}))
         .collect();
-    json!(names)
+    Ok(json!(names))
 }
 
 pub fn run(name: &str) -> ResultType<String> {
-    let scripts = load();
+    let scripts = load()?;
     let script = scripts
         .get(name)
         .ok_or_else(|| anyhow!("No such script: {name}"))?;
@@ -99,7 +141,14 @@ pub async fn run_scheduler() {
         if !crate::rmm::is_enabled(SCRIPTS_ENABLED_OPTION) {
             continue;
         }
-        for (name, script) in load() {
+        let scripts = match load() {
+            Ok(scripts) => scripts,
+            Err(err) => {
+                log::warn!("rmm: failed to load scripts: {err}");
+                continue;
+            }
+        };
+        for (name, script) in scripts {
             let Some(schedule_secs) = script.schedule_secs else {
                 continue;
             };
@@ -121,6 +170,19 @@ pub async fn run_scheduler() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn service_store_is_the_system_process_config_dir() {
+        let path = service_store_path().unwrap();
+        let s = path.to_string_lossy().to_lowercase();
+        assert!(
+            s.ends_with(
+                r"\serviceprofiles\localservice\appdata\roaming\rustdesk\config\rmm_scripts.json"
+            ),
+            "{s}"
+        );
+    }
 
     #[test]
     fn round_trips_through_json() {

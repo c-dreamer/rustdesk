@@ -16,6 +16,8 @@ const DISK_THRESHOLD_OPTION: &str = "rmm-disk-threshold";
 const WATCH_SERVICES_OPTION: &str = "rmm-watch-services";
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const ALERTS_LOG_FILE: &str = "rmm_alerts.log";
+const RECENT_ALERTS_OPTION: &str = "rmm-recent-alerts";
+const RECENT_ALERTS_KEPT: usize = 20;
 
 fn option_threshold(key: &str) -> Option<f32> {
     Config::get_option(key).trim().parse().ok()
@@ -92,11 +94,36 @@ fn worst_fixed_disk() -> Option<(String, f32)> {
         })
 }
 
-pub fn alerts_log_path() -> std::path::PathBuf {
+fn alerts_log_path() -> std::path::PathBuf {
     Config::log_path().join(ALERTS_LOG_FILE)
 }
 
+/// The log lives in the monitoring process's own (possibly SYSTEM-only) log dir, so
+/// the latest alerts are also mirrored into an option, which every client reads over IPC.
+pub fn recent_alerts() -> Vec<String> {
+    crate::ipc::get_options()
+        .get(RECENT_ALERTS_OPTION)
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default()
+}
+
+/// Newest first, capped at `RECENT_ALERTS_KEPT`.
+fn merge_recent(existing: &str, now: i64, alerts: &[String]) -> Vec<String> {
+    let mut recent: Vec<String> = serde_json::from_str(existing).unwrap_or_default();
+    recent.splice(0..0, alerts.iter().rev().map(|a| format!("{now} {a}")));
+    recent.truncate(RECENT_ALERTS_KEPT);
+    recent
+}
+
+fn remember_alerts(now: i64, alerts: &[String]) {
+    let recent = merge_recent(&Config::get_option(RECENT_ALERTS_OPTION), now, alerts);
+    if let Ok(json) = serde_json::to_string(&recent) {
+        Config::set_option(RECENT_ALERTS_OPTION.to_owned(), json);
+    }
+}
+
 fn log_alerts(alerts: &[String]) {
+    remember_alerts(hbb_common::get_time(), alerts);
     let path = alerts_log_path();
     let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
@@ -208,6 +235,18 @@ mod tests {
     fn down_service_always_reported() {
         let alerts = check_thresholds(0.0, 0.0, None, None, None, None, &["Spooler".to_owned()]);
         assert_eq!(alerts, vec!["Service 'Spooler' is not running".to_owned()]);
+    }
+
+    #[test]
+    fn recent_alerts_newest_first_and_capped() {
+        let first = merge_recent("", 1, &["a".to_owned(), "b".to_owned()]);
+        assert_eq!(first, vec!["1 b", "1 a"]);
+        let json = serde_json::to_string(&first).unwrap();
+        let many: Vec<String> = (0..30).map(|i| i.to_string()).collect();
+        let merged = merge_recent(&json, 2, &many);
+        assert_eq!(merged.len(), RECENT_ALERTS_KEPT);
+        assert_eq!(merged[0], "2 29");
+        assert!(merge_recent("not json", 3, &[]).is_empty());
     }
 
     #[test]

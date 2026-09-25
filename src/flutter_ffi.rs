@@ -1070,25 +1070,19 @@ pub fn main_rmm_inventory() -> String {
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_rmm_recent_alerts() -> String {
-    let recent_alerts: Vec<String> =
-        std::fs::read_to_string(crate::rmm::monitor::alerts_log_path())
-            .unwrap_or_default()
-            .lines()
-            .rev()
-            .take(20)
-            .map(str::to_owned)
-            .collect();
-    serde_json::json!(recent_alerts).to_string()
+    serde_json::json!(crate::rmm::monitor::recent_alerts()).to_string()
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_rmm_list_scripts() -> String {
-    crate::rmm::scripts::list().to_string()
+    crate::rmm::scripts::list()
+        .unwrap_or_else(|_| serde_json::json!([]))
+        .to_string()
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn main_rmm_add_script(name: String, body: String) -> String {
-    match crate::rmm::scripts::add(&name, &body) {
+    match crate::rmm::scripts::add(&name, &body, None) {
         Ok(()) => "".to_owned(),
         Err(err) => err.to_string(),
     }

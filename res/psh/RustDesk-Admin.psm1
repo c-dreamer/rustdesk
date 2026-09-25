@@ -166,10 +166,13 @@ function Add-RustDeskScript {
     param(
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][string]$Path,
+        [ValidateRange(1, [int]::MaxValue)][int]$ScheduleSeconds,
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--add-script", $Name, $Path
+    $cliArgs = @("--add-script", $Name, $Path)
+    if ($PSBoundParameters.ContainsKey('ScheduleSeconds')) { $cliArgs += "$ScheduleSeconds" }
+    Invoke-RustDeskExe -Exe $exe -ArgumentList $cliArgs
 }
 
 function Invoke-RustDeskScript {

@@ -25,6 +25,17 @@ Uninstall-RustDeskApp -Confirm   # prompts before uninstalling
 Auto-detects `rustdesk.exe` under `Program Files`; pass `-Exe <path>` to override.
 Admin CLI commands require an elevated shell — run PowerShell as Administrator.
 
+## Script library
+
+```powershell
+Add-RustDeskScript -Name cleanup -Path .\cleanup.ps1 -ScheduleSeconds 3600  # omit for on-demand only
+Set-RustDeskOption -Name rmm-scripts-enabled -Value Y                      # turn the scheduler on
+```
+
+On an installed endpoint, scheduled scripts run as SYSTEM. The library therefore lives in
+the service profile (`C:\Windows\ServiceProfiles\LocalService\...\config\rmm_scripts.json`),
+where only admins can write it. Add, list and run scripts from an elevated shell.
+
 ## AI agents (MCP)
 
 `rustdesk.exe --mcp` runs a Model Context Protocol server over stdio (no listening port),

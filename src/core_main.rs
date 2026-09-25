@@ -591,24 +591,19 @@ pub fn core_main() -> Option<Vec<String>> {
                 .iter()
                 .map(|k| (k.to_string(), options.get(*k).cloned().unwrap_or_default()))
                 .collect();
-            let recent_alerts: Vec<String> =
-                std::fs::read_to_string(crate::rmm::monitor::alerts_log_path())
-                    .unwrap_or_default()
-                    .lines()
-                    .rev()
-                    .take(20)
-                    .map(str::to_owned)
-                    .collect();
             println!(
                 "{}",
-                serde_json::json!({"config": thresholds, "recent_alerts": recent_alerts})
+                serde_json::json!({"config": thresholds, "recent_alerts": crate::rmm::monitor::recent_alerts()})
             );
             return None;
         } else if args[0] == "--mcp" {
             crate::rmm::mcp::serve(is_cli_setting_change_disabled());
             return None;
         } else if args[0] == "--list-scripts" {
-            println!("{}", crate::rmm::scripts::list());
+            match crate::rmm::scripts::list() {
+                Ok(list) => println!("{}", list),
+                Err(err) => println!("{}", err),
+            }
             return None;
         } else if args[0] == "--run-script" {
             if is_cli_setting_change_disabled() {
@@ -627,9 +622,17 @@ pub fn core_main() -> Option<Vec<String>> {
                 println!("Settings are disabled!");
                 return None;
             }
-            if args.len() == 3 {
+            if args.len() == 3 || args.len() == 4 {
+                let schedule_secs = match args.get(3).map(|s| s.parse::<u64>()) {
+                    Some(Ok(0)) | Some(Err(_)) => {
+                        println!("Schedule must be a positive number of seconds");
+                        return None;
+                    }
+                    Some(Ok(secs)) => Some(secs),
+                    None => None,
+                };
                 match std::fs::read_to_string(&args[2]) {
-                    Ok(body) => match crate::rmm::scripts::add(&args[1], &body) {
+                    Ok(body) => match crate::rmm::scripts::add(&args[1], &body, schedule_secs) {
                         Ok(()) => println!("Done!"),
                         Err(err) => println!("{}", err),
                     },

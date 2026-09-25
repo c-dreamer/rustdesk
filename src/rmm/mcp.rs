@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
 const AGENT_WRITE_OPTION: &str = "rmm-agent-write";
+const RECENT_ALERTS_OPTION: &str = "rmm-recent-alerts";
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
 pub fn serve(cli_settings_disabled: bool) {
@@ -154,20 +155,15 @@ fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Resu
             let options = crate::ipc::get_options();
             let config: serde_json::Map<String, Value> = options
                 .iter()
-                .filter(|(k, _)| k.starts_with("rmm-"))
+                .filter(|(k, _)| k.starts_with("rmm-") && k.as_str() != RECENT_ALERTS_OPTION)
                 .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
                 .collect();
-            let recent_alerts: Vec<String> =
-                std::fs::read_to_string(crate::rmm::monitor::alerts_log_path())
-                    .unwrap_or_default()
-                    .lines()
-                    .rev()
-                    .take(20)
-                    .map(str::to_owned)
-                    .collect();
+            let recent_alerts = crate::rmm::monitor::recent_alerts();
             Ok(json!({"config": config, "recent_alerts": recent_alerts}).to_string())
         }
-        "list_scripts" => Ok(crate::rmm::scripts::list().to_string()),
+        "list_scripts" => crate::rmm::scripts::list()
+            .map(|v| v.to_string())
+            .map_err(|err| err.to_string()),
         "list_peers" => {
             let peers: Vec<Value> = config::PeerConfig::peers(None)
                 .into_iter()
@@ -189,9 +185,10 @@ fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Resu
         "set_option" => {
             require_write(write_allowed)?;
             let key = str_arg(args, "name")?;
-            if !key.starts_with("rmm-") || key == AGENT_WRITE_OPTION {
+            if !key.starts_with("rmm-") || key == AGENT_WRITE_OPTION || key == RECENT_ALERTS_OPTION
+            {
                 return Err(format!(
-                    "Only rmm-* options other than {AGENT_WRITE_OPTION} can be set"
+                    "Only rmm-* options other than {AGENT_WRITE_OPTION} and {RECENT_ALERTS_OPTION} can be set"
                 ));
             }
             crate::ipc::set_option(key, str_arg(args, "value")?);
