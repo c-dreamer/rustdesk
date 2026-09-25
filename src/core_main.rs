@@ -604,6 +604,9 @@ pub fn core_main() -> Option<Vec<String>> {
                 serde_json::json!({"config": thresholds, "recent_alerts": recent_alerts})
             );
             return None;
+        } else if args[0] == "--mcp" {
+            crate::rmm::mcp::serve(is_cli_setting_change_disabled());
+            return None;
         } else if args[0] == "--list-scripts" {
             println!("{}", crate::rmm::scripts::list());
             return None;

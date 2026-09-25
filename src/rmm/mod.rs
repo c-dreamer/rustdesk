@@ -4,6 +4,7 @@
 //! existing option store and plain JSON files next to the existing config dir.
 
 pub mod inventory;
+pub mod mcp;
 pub mod monitor;
 pub mod scripts;
 
