@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 const SCRIPTS_FILE: &str = "rmm_scripts.json";
+const LAST_RUN_FILE: &str = "rmm_scripts_last_run.json";
 const SCRIPTS_ENABLED_OPTION: &str = "rmm-scripts-enabled";
 const SCHEDULER_TICK: std::time::Duration = std::time::Duration::from_secs(60);
 
@@ -130,11 +131,29 @@ fn run_body(body: &str) -> ResultType<String> {
     hbb_common::sh::run_cmds_trim_newline(body)
 }
 
+fn last_run_path() -> std::path::PathBuf {
+    store_path().with_file_name(LAST_RUN_FILE)
+}
+
+/// Persisted because the service restarts `--server` on every session change;
+/// in-memory state would rerun every scheduled script at each logon.
+fn load_last_run() -> HashMap<String, i64> {
+    std::fs::read_to_string(last_run_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn is_due(last_run: Option<i64>, now: i64, schedule_secs: u64) -> bool {
+    last_run.map_or(true, |t| {
+        now.saturating_sub(t) as u64 >= schedule_secs || t > now
+    })
+}
+
 /// Polls once a minute; a script with `schedule_secs` set runs once that much
-/// time has elapsed since the last run. Elapsed time is tracked in memory only
-/// (resets on restart) -- acceptable for a schedule granularity of minutes.
+/// time has elapsed since its last run.
 pub async fn run_scheduler() {
-    let mut last_run: HashMap<String, std::time::Instant> = HashMap::new();
+    let mut last_run = load_last_run();
     let mut timer = crate::rustdesk_interval(tokio::time::interval(SCHEDULER_TICK));
     loop {
         timer.tick().await;
@@ -152,16 +171,23 @@ pub async fn run_scheduler() {
             let Some(schedule_secs) = script.schedule_secs else {
                 continue;
             };
-            let due = last_run
-                .get(&name)
-                .map(|t| t.elapsed().as_secs() >= schedule_secs)
-                .unwrap_or(true);
-            if !due {
+            let now = hbb_common::get_time() / 1000;
+            if !is_due(last_run.get(&name).copied(), now, schedule_secs) {
                 continue;
             }
-            last_run.insert(name.clone(), std::time::Instant::now());
-            if let Err(err) = run_body(&script.body) {
-                log::warn!("rmm: scheduled script '{name}' failed: {err}");
+            last_run.insert(name.clone(), now);
+            match serde_json::to_string(&last_run) {
+                Ok(json) => {
+                    if let Err(err) = std::fs::write(last_run_path(), json) {
+                        log::warn!("rmm: failed to save script last-run state: {err}");
+                    }
+                }
+                Err(err) => log::warn!("rmm: failed to encode script last-run state: {err}"),
+            }
+            match tokio::task::spawn_blocking(move || run_body(&script.body)).await {
+                Ok(Err(err)) => log::warn!("rmm: scheduled script '{name}' failed: {err}"),
+                Err(err) => log::warn!("rmm: scheduled script '{name}' panicked: {err}"),
+                Ok(Ok(_)) => {}
             }
         }
     }
@@ -182,6 +208,14 @@ mod tests {
             ),
             "{s}"
         );
+    }
+
+    #[test]
+    fn due_after_interval_or_clock_rollback() {
+        assert!(is_due(None, 100, 60));
+        assert!(!is_due(Some(100), 159, 60));
+        assert!(is_due(Some(100), 160, 60));
+        assert!(is_due(Some(500), 100, 60));
     }
 
     #[test]
