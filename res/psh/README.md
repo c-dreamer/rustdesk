@@ -49,6 +49,9 @@ until a human turns them on. The agent cannot turn them on itself.
 rustdesk --option rmm-agent-write Y   # enable write tools; N to disable again
 ```
 
+`--option` only works on an installed RustDesk, from an elevated shell. On a portable copy
+write tools stay off.
+
 Register the server. Replace the path if RustDesk is installed elsewhere.
 
 Claude Code:
