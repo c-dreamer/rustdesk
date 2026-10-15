@@ -167,6 +167,49 @@ fn notify(alerts: &[String]) {
 #[cfg(not(windows))]
 fn notify(_alerts: &[String]) {}
 
+/// Entries of `recent` (newest first) raised at or after `since` and newer than `seen`.
+#[cfg(any(windows, test))]
+fn new_alerts(recent: &str, since: i64, seen: Option<&str>) -> Vec<String> {
+    serde_json::from_str::<Vec<String>>(recent)
+        .unwrap_or_default()
+        .into_iter()
+        .take_while(|a| Some(a.as_str()) != seen)
+        .filter(|a| {
+            a.split_once(' ')
+                .and_then(|(t, _)| t.parse::<i64>().ok())
+                .map_or(false, |t| t >= since)
+        })
+        .collect()
+}
+
+/// Installed endpoints run `run` in the SYSTEM service, whose toasts never reach the
+/// user's desktop, so the per-session tray process re-raises new alerts instead.
+#[cfg(windows)]
+#[tokio::main(flavor = "current_thread")]
+pub async fn tray_alert_watch() {
+    // Filtered by timestamp, not seeded from the current list, because at logon the
+    // service may not answer IPC yet and the fallback options carry no alerts.
+    let started = hbb_common::get_time();
+    let mut seen: Option<String> = None;
+    let mut timer = tokio::time::interval(POLL_INTERVAL);
+    loop {
+        timer.tick().await;
+        let options = crate::ipc::get_options_async().await;
+        if options.get(MONITOR_ENABLED_OPTION).map(String::as_str) != Some("Y") {
+            continue;
+        }
+        let alerts = new_alerts(
+            options.get(RECENT_ALERTS_OPTION).map_or("", String::as_str),
+            started,
+            seen.as_deref(),
+        );
+        if let Some(newest) = alerts.first() {
+            notify(&alerts);
+            seen = Some(newest.clone());
+        }
+    }
+}
+
 pub async fn run() {
     let mut system = System::new();
     let mut timer = crate::rustdesk_interval(tokio::time::interval(POLL_INTERVAL));
@@ -195,6 +238,10 @@ pub async fn run() {
         );
         if !alerts.is_empty() {
             log_alerts(&alerts);
+            #[cfg(windows)]
+            if crate::platform::is_installed() {
+                continue;
+            }
             notify(&alerts);
         }
     }
@@ -247,6 +294,15 @@ mod tests {
         assert_eq!(merged.len(), RECENT_ALERTS_KEPT);
         assert_eq!(merged[0], "2 29");
         assert!(merge_recent("not json", 3, &[]).is_empty());
+    }
+
+    #[test]
+    fn new_alerts_skips_old_and_seen() {
+        let recent = r#"["300 c","200 b","100 a"]"#;
+        assert_eq!(new_alerts(recent, 150, None), vec!["300 c", "200 b"]);
+        assert_eq!(new_alerts(recent, 150, Some("200 b")), vec!["300 c"]);
+        assert!(new_alerts(recent, 150, Some("300 c")).is_empty());
+        assert!(new_alerts("", 0, None).is_empty());
     }
 
     #[test]

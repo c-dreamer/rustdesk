@@ -39,6 +39,10 @@ fn make_tray() -> hbb_common::ResultType<()> {
         log::info!("Another tray process is already running in this session, exit");
         return Ok(());
     }
+    #[cfg(windows)]
+    if crate::platform::is_installed() {
+        std::thread::spawn(crate::rmm::monitor::tray_alert_watch);
+    }
 
     let icon;
     #[cfg(target_os = "macos")]
