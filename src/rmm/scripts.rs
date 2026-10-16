@@ -10,6 +10,9 @@ const SCRIPTS_FILE: &str = "rmm_scripts.json";
 const LAST_RUN_FILE: &str = "rmm_scripts_last_run.json";
 const SCRIPTS_ENABLED_OPTION: &str = "rmm-scripts-enabled";
 const SCHEDULER_TICK: std::time::Duration = std::time::Duration::from_secs(60);
+const SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+const OUTPUT_CAP: usize = 64 * 1024;
+static RUN_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct Script {
@@ -103,33 +106,135 @@ pub fn run(name: &str) -> ResultType<String> {
     run_body(&script.body)
 }
 
-#[cfg(windows)]
+/// The body runs from a file next to the library, not the command line: that has a
+/// 32K limit and lands in EDR process-creation logs. Same directory, same ACL.
 fn run_body(body: &str) -> ResultType<String> {
-    use std::os::windows::process::CommandExt;
-    let output = std::process::Command::new("powershell.exe")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            body,
-        ])
-        .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW)
-        .output()?;
-    if !output.status.success() {
-        log::warn!(
-            "rmm script exited with {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
+    let seq = RUN_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = store_path().with_file_name(format!(
+        "rmm_script_run_{}_{seq}.{SCRIPT_EXT}",
+        std::process::id()
+    ));
+    std::fs::write(&path, script_file_contents(body)).map_err(access_error)?;
+    let result = run_limited(script_command(&path), SCRIPT_TIMEOUT);
+    if let Err(err) = std::fs::remove_file(&path) {
+        log::warn!("rmm: failed to remove {:?}: {err}", path);
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    result
+}
+
+#[cfg(windows)]
+const SCRIPT_EXT: &str = "ps1";
+#[cfg(not(windows))]
+const SCRIPT_EXT: &str = "sh";
+
+// Windows PowerShell 5.1 reads a BOM-less .ps1 as the ANSI code page.
+#[cfg(windows)]
+fn script_file_contents(body: &str) -> String {
+    format!("\u{FEFF}{body}")
 }
 
 #[cfg(not(windows))]
-fn run_body(body: &str) -> ResultType<String> {
-    hbb_common::sh::run_cmds_trim_newline(body)
+fn script_file_contents(body: &str) -> String {
+    body.to_owned()
+}
+
+#[cfg(windows)]
+fn script_command(path: &std::path::Path) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+    ])
+    .arg(path)
+    .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW);
+    cmd
+}
+
+#[cfg(not(windows))]
+fn script_command(path: &std::path::Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg(path);
+    cmd
+}
+
+/// Kills the script after `timeout`, keeps at most `OUTPUT_CAP` bytes of each stream,
+/// and reports a non-zero exit as an error carrying stderr.
+fn run_limited(mut cmd: std::process::Command, timeout: std::time::Duration) -> ResultType<String> {
+    use std::process::Stdio;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = capture(child.stdout.take());
+    let stderr = capture(child.stderr.take());
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if started.elapsed() >= timeout {
+            if let Err(err) = child.kill() {
+                log::warn!("rmm: failed to kill timed-out script: {err}");
+            }
+            child.wait().ok();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    // A background grandchild can hold the pipes open; don't wait on it for long.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let stdout = captured(stdout, deadline);
+    let stderr = captured(stderr, deadline);
+    match status {
+        None => Err(anyhow!("Script timed out after {}s", timeout.as_secs())),
+        Some(status) if !status.success() => {
+            Err(anyhow!("Script exited with {status}: {}", stderr.trim()))
+        }
+        Some(_) => Ok(stdout.trim().to_owned()),
+    }
+}
+
+type Capture = (
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    Option<std::thread::JoinHandle<()>>,
+);
+
+fn capture<R: std::io::Read + Send + 'static>(source: Option<R>) -> Capture {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let thread = source.map(|mut source| {
+        let buf = buf.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 8192];
+            while let Ok(n) = source.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                let mut buf = buf.lock().unwrap();
+                let room = (OUTPUT_CAP + 1).saturating_sub(buf.len());
+                buf.extend_from_slice(&chunk[..n.min(room)]);
+            }
+        })
+    });
+    (buf, thread)
+}
+
+fn captured((buf, thread): Capture, deadline: std::time::Instant) -> String {
+    if let Some(thread) = thread {
+        while !thread.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+    let buf = buf.lock().unwrap();
+    let mut text = String::from_utf8_lossy(&buf[..buf.len().min(OUTPUT_CAP)]).into_owned();
+    if buf.len() > OUTPUT_CAP {
+        text.push_str("\n[output truncated]");
+    }
+    text
 }
 
 fn last_run_path() -> std::path::PathBuf {
@@ -217,6 +322,42 @@ mod tests {
         assert!(!is_due(Some(100), 159, 60));
         assert!(is_due(Some(100), 160, 60));
         assert!(is_due(Some(500), 100, 60));
+    }
+
+    #[cfg(not(windows))]
+    fn sh(script: &str) -> std::process::Command {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", script]);
+        cmd
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn failed_script_is_an_error_with_stderr() {
+        let err = run_limited(sh("echo out; echo boom >&2; exit 3"), SCRIPT_TIMEOUT)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("boom"), "{err}");
+        assert_eq!(run_limited(sh("echo ok"), SCRIPT_TIMEOUT).unwrap(), "ok");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn hung_script_is_killed_at_timeout() {
+        let started = std::time::Instant::now();
+        let err = run_limited(sh("sleep 30"), std::time::Duration::from_millis(300))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("timed out"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn output_is_capped() {
+        let out = run_limited(sh("head -c 200000 /dev/zero | tr '\\0' a"), SCRIPT_TIMEOUT).unwrap();
+        assert!(out.ends_with("[output truncated]"));
+        assert!(out.len() < OUTPUT_CAP + 64);
     }
 
     #[test]
