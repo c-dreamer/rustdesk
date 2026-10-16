@@ -61,6 +61,28 @@ fn check_thresholds(
     alerts
 }
 
+/// A breach that persists across polls is reported once, when it starts; it is
+/// reported again only after it clears. Keyed on the alert text minus its
+/// percentages, which change from poll to poll.
+fn newly_breached(
+    active: &mut std::collections::HashSet<String>,
+    alerts: Vec<String>,
+) -> Vec<String> {
+    let key = |a: &str| {
+        a.split_whitespace()
+            .filter(|w| !w.ends_with('%'))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let current: std::collections::HashSet<String> = alerts.iter().map(|a| key(a)).collect();
+    let fresh = alerts
+        .into_iter()
+        .filter(|a| !active.contains(&key(a)))
+        .collect();
+    *active = current;
+    fresh
+}
+
 #[cfg(windows)]
 fn down_services() -> Vec<String> {
     Config::get_option(WATCH_SERVICES_OPTION)
@@ -212,10 +234,12 @@ pub async fn tray_alert_watch() {
 
 pub async fn run() {
     let mut system = System::new();
+    let mut active = std::collections::HashSet::new();
     let mut timer = crate::rustdesk_interval(tokio::time::interval(POLL_INTERVAL));
     loop {
         timer.tick().await;
         if !crate::rmm::is_enabled(MONITOR_ENABLED_OPTION) {
+            active.clear();
             continue;
         }
         system.refresh_cpu_usage();
@@ -236,6 +260,7 @@ pub async fn run() {
             option_threshold(DISK_THRESHOLD_OPTION),
             &down_services(),
         );
+        let alerts = newly_breached(&mut active, alerts);
         if !alerts.is_empty() {
             log_alerts(&alerts);
             #[cfg(windows)]
@@ -294,6 +319,25 @@ mod tests {
         assert_eq!(merged.len(), RECENT_ALERTS_KEPT);
         assert_eq!(merged[0], "2 29");
         assert!(merge_recent("not json", 3, &[]).is_empty());
+    }
+
+    #[test]
+    fn sustained_breach_reported_once_until_cleared() {
+        let mut active = std::collections::HashSet::new();
+        let cpu = |p: u32| format!("CPU usage {p}% exceeds threshold 80%");
+        let svc = |n: &str| format!("Service '{n}' is not running");
+        assert_eq!(newly_breached(&mut active, vec![cpu(90)]), vec![cpu(90)]);
+        assert!(newly_breached(&mut active, vec![cpu(95)]).is_empty());
+        assert_eq!(
+            newly_breached(&mut active, vec![cpu(96), svc("svc1")]),
+            vec![svc("svc1")]
+        );
+        assert_eq!(
+            newly_breached(&mut active, vec![cpu(97), svc("svc1"), svc("svc2")]),
+            vec![svc("svc2")]
+        );
+        assert!(newly_breached(&mut active, vec![]).is_empty());
+        assert_eq!(newly_breached(&mut active, vec![cpu(85)]), vec![cpu(85)]);
     }
 
     #[test]
