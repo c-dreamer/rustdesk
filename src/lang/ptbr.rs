@@ -803,5 +803,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("To run commands on a connected remote machine, use the Terminal connection type from the Connect page.", ""),
         ("AI agents", ""),
         ("Allow AI agents to run scripts and change monitoring settings", ""),
+        ("Inventory", ""),
+        ("Monitoring", ""),
+        ("Scripts", ""),
+        ("Peers", ""),
     ].iter().cloned().collect();
 }
