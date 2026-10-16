@@ -78,7 +78,7 @@ class DesktopSettingPage extends StatefulWidget {
         !bind.isDisableSettings() &&
         bind.mainGetBuildinOption(key: kOptionHideRemotePrinterSetting) != 'Y')
       SettingsTabKey.printer,
-    SettingsTabKey.tools,
+    if (!isWeb && !bind.isDisableSettings()) SettingsTabKey.tools,
     SettingsTabKey.about,
   ];
 
