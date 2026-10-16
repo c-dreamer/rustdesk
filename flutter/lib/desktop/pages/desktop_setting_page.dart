@@ -2520,6 +2520,18 @@ class _ToolsState extends State<_Tools> {
   final _memThresholdCtrl = TextEditingController();
   final _diskThresholdCtrl = TextEditingController();
   final _watchServicesCtrl = TextEditingController();
+  // Last saved value per field, so a rebuild (e.g. toggling a switch) does not
+  // overwrite text the user has typed but not saved yet.
+  final Map<String, String> _loadedOptions = {};
+
+  void _syncField(
+      TextEditingController ctrl, Map<String, dynamic> options, String key) {
+    final value = options[key]?.toString() ?? '';
+    if (_loadedOptions[key] != value) {
+      _loadedOptions[key] = value;
+      ctrl.text = value;
+    }
+  }
 
   @override
   void dispose() {
@@ -2571,10 +2583,10 @@ class _ToolsState extends State<_Tools> {
           'ID: $myId\nVersion: $version\nOptions: ${jsonEncode(options)}';
       final monitorEnabled = options['rmm-monitor-enabled'] == 'Y';
       final scriptsEnabled = options['rmm-scripts-enabled'] == 'Y';
-      _cpuThresholdCtrl.text = options['rmm-cpu-threshold']?.toString() ?? '';
-      _memThresholdCtrl.text = options['rmm-mem-threshold']?.toString() ?? '';
-      _diskThresholdCtrl.text = options['rmm-disk-threshold']?.toString() ?? '';
-      _watchServicesCtrl.text = options['rmm-watch-services']?.toString() ?? '';
+      _syncField(_cpuThresholdCtrl, options, 'rmm-cpu-threshold');
+      _syncField(_memThresholdCtrl, options, 'rmm-mem-threshold');
+      _syncField(_diskThresholdCtrl, options, 'rmm-disk-threshold');
+      _syncField(_watchServicesCtrl, options, 'rmm-watch-services');
 
       return SingleChildScrollView(
         child: Column(
