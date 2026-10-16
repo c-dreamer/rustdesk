@@ -38,8 +38,9 @@ where only admins can write it. Add, list and run scripts from an elevated shell
 
 ## AI agents (MCP)
 
-`rustdesk.exe --mcp` runs a Model Context Protocol server over stdio (no listening port),
-so Claude Code, Codex and opencode can drive this machine headlessly.
+`rustdesk --mcp` runs a Model Context Protocol server over stdio (no listening port),
+so Claude Code, Codex, opencode, Gemini CLI, Hermes or any other MCP client can drive this
+machine headlessly, on Windows, Linux or macOS.
 
 Read tools, always on: `get_status`, `get_inventory`, `get_alerts`, `list_scripts`, `list_peers`.
 Write tools: `run_script`, and `set_option` (monitoring options only: `rmm-monitor-enabled` and the CPU, memory, disk and watched-service settings). These are refused
@@ -83,6 +84,58 @@ opencode (`opencode.json`):
   }
 }
 ```
+
+### Linux and macOS
+
+Same server, different binary path. The snippets use the Linux path, `/usr/bin/rustdesk`; on
+macOS, replace it with `/Applications/RustDesk.app/Contents/MacOS/RustDesk`. On Linux,
+`sudo rustdesk --option rmm-agent-write Y` (or the Tools tab switch) opens the write gate.
+
+Claude Code:
+
+```sh
+claude mcp add --scope user rustdesk -- /usr/bin/rustdesk --mcp
+```
+
+Codex (`codex mcp add rustdesk -- /usr/bin/rustdesk --mcp`, or `~/.codex/config.toml`):
+
+```toml
+[mcp_servers.rustdesk]
+command = "/usr/bin/rustdesk"
+args = ["--mcp"]
+```
+
+opencode (`~/.config/opencode/opencode.json`):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "rustdesk": {
+      "type": "local",
+      "command": ["/usr/bin/rustdesk", "--mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Gemini CLI (writes `~/.gemini/settings.json`; the `--` stops gemini reading `--mcp` as its own flag):
+
+```sh
+gemini mcp add -s user rustdesk /usr/bin/rustdesk -- --mcp
+```
+
+Hermes (`~/.hermes/config.yaml`, then `/reload-mcp` in a running session):
+
+```yaml
+mcp_servers:
+  rustdesk:
+    command: "/usr/bin/rustdesk"
+    args: ["--mcp"]
+```
+
+Any other MCP client: launch `rustdesk --mcp` as a stdio server.
 
 ## Self-check
 
