@@ -77,6 +77,9 @@ fn handle(req: &Value, write_allowed: &dyn Fn() -> bool) -> Option<Value> {
             "tools/list" => result(id, json!({"tools": tool_list()})),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                if !tool_list().iter().any(|t| t["name"] == name) {
+                    return Some(error(id, -32602, &format!("Unknown tool: {name}")));
+                }
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let (text, is_error) = match call_tool(name, &args, write_allowed) {
                     Ok(text) => (text, false),
@@ -303,6 +306,15 @@ mod tests {
         ] {
             assert!(check_settable(key, value).is_err(), "{key}={value}");
         }
+    }
+
+    #[test]
+    fn unknown_tool_is_a_protocol_error() {
+        let req = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "nope", "arguments": {}}});
+        let res = handle(&req, &|| true).unwrap();
+        assert_eq!(res["error"]["code"], -32602);
+        assert_eq!(res["id"], 3);
     }
 
     #[test]
