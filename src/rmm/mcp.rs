@@ -10,6 +10,8 @@ use std::io::{BufRead, Write};
 const AGENT_WRITE_OPTION: &str = "rmm-agent-write";
 const RECENT_ALERTS_OPTION: &str = "rmm-recent-alerts";
 const PROTOCOL_VERSION: &str = "2025-06-18";
+// 2025-03-26 is left out: it allows JSON-RPC batches, which this server does not handle.
+const SUPPORTED_VERSIONS: &[&str] = &[PROTOCOL_VERSION, "2024-11-05"];
 
 pub fn serve(cli_settings_disabled: bool) {
     let stdin = std::io::stdin();
@@ -51,6 +53,7 @@ fn handle(req: &Value, write_allowed: &dyn Fn() -> bool) -> Option<Value> {
                 let version = params
                     .get("protocolVersion")
                     .and_then(Value::as_str)
+                    .filter(|v| SUPPORTED_VERSIONS.contains(v))
                     .unwrap_or(PROTOCOL_VERSION);
                 result(
                     id,
@@ -237,6 +240,17 @@ mod tests {
             let res = call("set_option", json!({"name": key, "value": "Y"}), true);
             assert_eq!(res["isError"], true, "{key}");
         }
+    }
+
+    #[test]
+    fn negotiates_only_supported_versions() {
+        let init = |v: &str| {
+            let req = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": v}});
+            handle(&req, &|| false).unwrap()["result"]["protocolVersion"].clone()
+        };
+        assert_eq!(init("2024-11-05"), "2024-11-05");
+        assert_eq!(init("2099-01-01"), PROTOCOL_VERSION);
     }
 
     #[test]
