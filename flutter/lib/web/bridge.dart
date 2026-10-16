@@ -776,6 +776,27 @@ class RustdeskImpl {
     return Future(() => mainGetOptionsSync());
   }
 
+  Future<String> mainRmmInventory({dynamic hint}) {
+    return Future.value('{}');
+  }
+
+  Future<String> mainRmmRecentAlerts({dynamic hint}) {
+    return Future.value('[]');
+  }
+
+  Future<String> mainRmmListScripts({dynamic hint}) {
+    return Future.value('[]');
+  }
+
+  Future<String> mainRmmAddScript(
+      {required String name, required String body, dynamic hint}) {
+    throw UnimplementedError("mainRmmAddScript");
+  }
+
+  Future<String> mainRmmRunScript({required String name, dynamic hint}) {
+    throw UnimplementedError("mainRmmRunScript");
+  }
+
   // get server settings
   String mainGetOptionsSync({dynamic hint}) {
     return js.context.callMethod('getByName', ['options']);
