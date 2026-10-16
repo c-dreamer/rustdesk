@@ -51,7 +51,8 @@ fn service_store_path() -> Option<std::path::PathBuf> {
 
 fn load() -> ResultType<HashMap<String, Script>> {
     match std::fs::read_to_string(store_path()) {
-        Ok(content) => Ok(serde_json::from_str(&content).unwrap_or_default()),
+        Ok(content) => serde_json::from_str(&content)
+            .map_err(|err| anyhow!("Script library {:?} is not valid JSON: {err}", store_path())),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
         Err(err) => Err(access_error(err)),
     }
