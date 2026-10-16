@@ -13,6 +13,7 @@ const MONITOR_ENABLED_OPTION: &str = "rmm-monitor-enabled";
 const CPU_THRESHOLD_OPTION: &str = "rmm-cpu-threshold";
 const MEM_THRESHOLD_OPTION: &str = "rmm-mem-threshold";
 const DISK_THRESHOLD_OPTION: &str = "rmm-disk-threshold";
+#[cfg(windows)]
 const WATCH_SERVICES_OPTION: &str = "rmm-watch-services";
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const ALERTS_LOG_FILE: &str = "rmm_alerts.log";
