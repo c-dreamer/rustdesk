@@ -36,6 +36,15 @@ try {
     Assert $false "Get-RustDeskOptions should not throw on non-JSON output: $_"
 }
 
+# Format-RustDeskArgument: Start-Process does not quote, so arguments with spaces
+# or quotes must survive the round trip through the Windows command-line parser.
+$fmt = { param($a) & (Get-Module RustDesk-Admin) { param($x) Format-RustDeskArgument $x } $a }
+Assert ((& $fmt 'plain') -eq 'plain') "plain argument is left unquoted"
+Assert ((& $fmt 'C:\Users\John Smith\x.ps1') -eq '"C:\Users\John Smith\x.ps1"') "argument with a space is quoted"
+Assert ((& $fmt 'C:\My Dir\') -eq '"C:\My Dir\\"') "trailing backslash is doubled inside quotes"
+Assert ((& $fmt 'say "hi"') -eq '"say \"hi\""') "embedded quotes are escaped"
+Assert ((& $fmt '') -eq '""') "empty argument is kept as an empty quoted string"
+
 if ($failures -gt 0) {
     Write-Error "$failures check(s) failed"
     exit 1

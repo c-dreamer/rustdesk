@@ -11,17 +11,27 @@ function Find-RustDeskExe {
     throw "rustdesk.exe not found. Pass -Exe <path> explicitly."
 }
 
+function Format-RustDeskArgument {
+    # Start-Process joins an argument array with spaces and no quoting, so quote
+    # each argument here using the rules CommandLineToArgvW (and Rust's std::env::args) parse.
+    param([AllowEmptyString()][string]$Argument)
+    if ($Argument -ne '' -and $Argument -notmatch '[\s"]') { return $Argument }
+    $escaped = $Argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1'
+    '"' + $escaped + '"'
+}
+
 function Invoke-RustDeskExe {
     # rustdesk.exe is a GUI-subsystem (WinMain) binary; PowerShell's `&` call
     # operator does not reliably capture its stdout. Start-Process with an
     # explicit redirect file does.
     param(
         [Parameter(Mandatory)][string]$Exe,
-        [Parameter(Mandatory)][string[]]$ArgumentList
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$ArgumentList
     )
     $outFile = [System.IO.Path]::GetTempFileName()
     try {
-        Start-Process -FilePath $Exe -ArgumentList $ArgumentList -NoNewWindow -Wait -RedirectStandardOutput $outFile
+        $argString = ($ArgumentList | ForEach-Object { Format-RustDeskArgument $_ }) -join ' '
+        Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -Wait -RedirectStandardOutput $outFile
         Get-Content -Raw -Encoding UTF8 -Path $outFile
     } finally {
         Remove-Item -Path $outFile -ErrorAction SilentlyContinue
@@ -65,7 +75,7 @@ function Set-RustDeskOption {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --option $Name $Value
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', $Name, $Value
 }
 
 function Set-RustDeskPassword {
@@ -75,7 +85,7 @@ function Set-RustDeskPassword {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --password $Password
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--password', $Password
 }
 
 function Set-RustDeskId {
@@ -85,7 +95,7 @@ function Set-RustDeskId {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --set-id $Id
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--set-id', $Id
 }
 
 function Import-RustDeskConfig {
@@ -95,7 +105,7 @@ function Import-RustDeskConfig {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --import-config $Path
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--import-config', $Path
 }
 
 function Install-RustDeskService {
@@ -151,7 +161,7 @@ function Set-RustDeskThreshold {
     )
     $exe = Find-RustDeskExe -Path $Exe
     $key = @{ Cpu = 'rmm-cpu-threshold'; Memory = 'rmm-mem-threshold'; Disk = 'rmm-disk-threshold' }[$Metric]
-    & $exe --option $key $Percent
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', $key, "$Percent"
 }
 
 function Get-RustDeskScripts {
@@ -189,14 +199,14 @@ function Enable-RustDeskMonitor {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --option rmm-monitor-enabled true
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', 'rmm-monitor-enabled', 'Y'
 }
 
 function Disable-RustDeskMonitor {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --option rmm-monitor-enabled false
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', 'rmm-monitor-enabled', 'N'
 }
 
 Export-ModuleMember -Function Get-RustDeskId, Get-RustDeskStatus, Get-RustDeskOptions, Get-RustDeskPeers, Set-RustDeskOption, Set-RustDeskPassword, Set-RustDeskId, Import-RustDeskConfig, Install-RustDeskService, Uninstall-RustDeskService, Update-RustDeskApp, Uninstall-RustDeskApp, Get-RustDeskInventory, Get-RustDeskAlerts, Set-RustDeskThreshold, Get-RustDeskScripts, Add-RustDeskScript, Invoke-RustDeskScript, Enable-RustDeskMonitor, Disable-RustDeskMonitor
