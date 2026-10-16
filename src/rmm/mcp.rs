@@ -3,7 +3,7 @@
 //! tooling headlessly. No listening port. Read tools are always available; tools that
 //! change state require the `rmm-agent-write` option, which the agent cannot set itself.
 
-use hbb_common::config;
+use hbb_common::{config, tokio};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
@@ -37,10 +37,19 @@ pub fn serve(cli_settings_disabled: bool) {
 }
 
 fn write_allowed(cli_settings_disabled: bool) -> bool {
-    !cli_settings_disabled
-        && crate::ipc::get_options()
-            .get(AGENT_WRITE_OPTION)
-            .map_or(false, |v| v == "Y")
+    !cli_settings_disabled && server_option(AGENT_WRITE_OPTION).as_deref() == Some("Y")
+}
+
+/// Fails closed: `ipc::get_options` falls back to the caller's own (user-writable)
+/// config when the server is unreachable, which must not open the write gate.
+#[tokio::main(flavor = "current_thread")]
+async fn server_option(key: &str) -> Option<String> {
+    let mut conn = crate::ipc::connect(1000, "").await.ok()?;
+    conn.send(&crate::ipc::Data::Options(None)).await.ok()?;
+    match conn.next_timeout(1000).await {
+        Ok(Some(crate::ipc::Data::Options(Some(options)))) => options.get(key).cloned(),
+        _ => None,
+    }
 }
 
 fn handle(req: &Value, write_allowed: &dyn Fn() -> bool) -> Option<Value> {
