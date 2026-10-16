@@ -801,6 +801,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("PowerShell / shell body", ""),
         ("Done!", ""),
         ("To run commands on a connected remote machine, use the Terminal connection type from the Connect page.", ""),
+        ("AI agents", ""),
+        ("Allow AI agents to run scripts and change monitoring settings", ""),
     ].iter().cloned().collect();
 }
 

@@ -49,8 +49,9 @@ until a human turns them on. The agent cannot turn them on itself.
 rustdesk --option rmm-agent-write Y   # enable write tools; N to disable again
 ```
 
-`--option` only works on an installed RustDesk, from an elevated shell. On a portable copy
-write tools stay off.
+`--option` only works on an installed RustDesk, from an elevated shell. The same switch is in
+Settings > Tools > AI agents; on an installed RustDesk it sits behind "Unlock Security Settings"
+(UAC or the unlock PIN). On a portable copy, that switch is the only way to turn write tools on.
 
 Register the server. Replace the path if RustDesk is installed elsewhere.
 

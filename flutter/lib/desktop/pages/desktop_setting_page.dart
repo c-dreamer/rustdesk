@@ -2523,6 +2523,9 @@ class _ToolsState extends State<_Tools> {
   // Last saved value per field, so a rebuild (e.g. toggling a switch) does not
   // overwrite text the user has typed but not saved yet.
   final Map<String, String> _loadedOptions = {};
+  // Same gate as the Safety tab: on an installed endpoint, opening the agent
+  // write gate needs elevation or the unlock PIN, so an agent cannot open it.
+  bool _agentWriteLocked = bind.mainIsInstalled();
 
   void _syncField(
       TextEditingController ctrl, Map<String, dynamic> options, String key) {
@@ -2583,6 +2586,7 @@ class _ToolsState extends State<_Tools> {
           'ID: $myId\nVersion: $version\nOptions: ${jsonEncode(options)}';
       final monitorEnabled = options['rmm-monitor-enabled'] == 'Y';
       final scriptsEnabled = options['rmm-scripts-enabled'] == 'Y';
+      final agentWrite = options['rmm-agent-write'] == 'Y';
       _syncField(_cpuThresholdCtrl, options, 'rmm-cpu-threshold');
       _syncField(_memThresholdCtrl, options, 'rmm-mem-threshold');
       _syncField(_diskThresholdCtrl, options, 'rmm-disk-threshold');
@@ -2625,6 +2629,9 @@ class _ToolsState extends State<_Tools> {
             ]),
             _Card(title: translate('Scripts'), children: [
               _buildScripts(scripts, scriptsEnabled),
+            ]),
+            _Card(title: translate('AI agents'), children: [
+              _buildAgentWrite(agentWrite),
             ]),
             _Card(title: translate('Peers'), children: [
               Text(translate(
@@ -2786,6 +2793,34 @@ class _ToolsState extends State<_Tools> {
           onPressed: () => _showAddScriptDialog(),
           child: Text(translate('Add script')),
         ).marginSymmetric(vertical: 4.0),
+      ],
+    ).marginOnly(left: _kContentHMargin);
+  }
+
+  Widget _buildAgentWrite(bool agentWrite) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _lock(_agentWriteLocked, 'Unlock Security Settings', () {
+          setState(() => _agentWriteLocked = false);
+        }),
+        Row(
+          children: [
+            Switch(
+              value: agentWrite,
+              onChanged: _agentWriteLocked
+                  ? null
+                  : (v) async {
+                      await bind.mainSetOption(
+                          key: 'rmm-agent-write', value: v ? 'Y' : 'N');
+                      setState(() {});
+                    },
+            ),
+            Expanded(
+                child: Text(translate(
+                    'Allow AI agents to run scripts and change monitoring settings'))),
+          ],
+        ),
       ],
     ).marginOnly(left: _kContentHMargin);
   }
