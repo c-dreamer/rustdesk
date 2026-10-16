@@ -42,7 +42,7 @@ where only admins can write it. Add, list and run scripts from an elevated shell
 so Claude Code, Codex and opencode can drive this machine headlessly.
 
 Read tools, always on: `get_status`, `get_inventory`, `get_alerts`, `list_scripts`, `list_peers`.
-Write tools: `run_script`, and `set_option` (for `rmm-*` options only). These are refused
+Write tools: `run_script`, and `set_option` (monitoring options only: `rmm-monitor-enabled` and the CPU, memory, disk and watched-service settings). These are refused
 until a human turns them on. The agent cannot turn them on itself.
 
 ```powershell

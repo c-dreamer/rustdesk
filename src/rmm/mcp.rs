@@ -134,7 +134,7 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "set_option",
-            "Set an rmm-* option, e.g. rmm-monitor-enabled=Y or rmm-cpu-threshold=90. Requires the rmm-agent-write option.",
+            "Set a monitoring option: rmm-monitor-enabled (Y/N), rmm-cpu-threshold, rmm-mem-threshold, rmm-disk-threshold (1-100, empty to clear) or rmm-watch-services (comma-separated). Requires the rmm-agent-write option.",
             json!({"name": {"type": "string"}, "value": {"type": "string"}}),
             &["name", "value"],
         ),
@@ -154,6 +154,27 @@ fn require_write(write_allowed: &dyn Fn() -> bool) -> Result<(), String> {
         Err(format!(
             "Write tools are disabled. A human must run: rustdesk --option {AGENT_WRITE_OPTION} Y"
         ))
+    }
+}
+
+/// Agents may tune monitoring only. Script execution (rmm-scripts-enabled runs the
+/// library as SYSTEM) and the agent's own gate stay with a human.
+fn check_settable(key: &str, value: &str) -> Result<(), String> {
+    let ok = match key {
+        "rmm-monitor-enabled" => value == "Y" || value == "N",
+        "rmm-cpu-threshold" | "rmm-mem-threshold" | "rmm-disk-threshold" => {
+            value.is_empty()
+                || value
+                    .parse::<f32>()
+                    .map_or(false, |v| (1.0..=100.0).contains(&v))
+        }
+        "rmm-watch-services" => value.len() <= 1024 && !value.contains(['\r', '\n']),
+        _ => return Err(format!("Option '{key}' cannot be set by an agent")),
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("Invalid value for {key}: '{value}'"))
     }
 }
 
@@ -197,13 +218,9 @@ fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Resu
         "set_option" => {
             require_write(write_allowed)?;
             let key = str_arg(args, "name")?;
-            if !key.starts_with("rmm-") || key == AGENT_WRITE_OPTION || key == RECENT_ALERTS_OPTION
-            {
-                return Err(format!(
-                    "Only rmm-* options other than {AGENT_WRITE_OPTION} and {RECENT_ALERTS_OPTION} can be set"
-                ));
-            }
-            crate::ipc::set_option(key, str_arg(args, "value")?);
+            let value = str_arg(args, "value")?;
+            check_settable(key, value)?;
+            crate::ipc::set_option(key, value);
             Ok("Done!".to_owned())
         }
         _ => Err(format!("Unknown tool: {name}")),
@@ -260,6 +277,32 @@ mod tests {
         };
         assert_eq!(init("2024-11-05"), "2024-11-05");
         assert_eq!(init("2099-01-01"), PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn set_option_allows_only_monitoring_keys_and_valid_values() {
+        for (key, value) in [
+            ("rmm-monitor-enabled", "Y"),
+            ("rmm-monitor-enabled", "N"),
+            ("rmm-cpu-threshold", "90"),
+            ("rmm-disk-threshold", ""),
+            ("rmm-watch-services", "Spooler, W32Time"),
+        ] {
+            assert!(check_settable(key, value).is_ok(), "{key}={value}");
+        }
+        for (key, value) in [
+            ("rmm-scripts-enabled", "Y"),
+            ("rmm-agent-write", "Y"),
+            ("rmm-recent-alerts", "[]"),
+            ("custom-rendezvous-server", "x"),
+            ("rmm-monitor-enabled", "true"),
+            ("rmm-cpu-threshold", "0"),
+            ("rmm-cpu-threshold", "101"),
+            ("rmm-mem-threshold", "abc"),
+            ("rmm-watch-services", "a\nb"),
+        ] {
+            assert!(check_settable(key, value).is_err(), "{key}={value}");
+        }
     }
 
     #[test]
