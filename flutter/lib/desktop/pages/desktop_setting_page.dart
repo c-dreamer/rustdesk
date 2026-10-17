@@ -2821,14 +2821,16 @@ class _ToolsState extends State<_Tools> {
                     : () async {
                         final name = s['name'].toString();
                         setState(() => _runningScripts.add(name));
-                        final String output;
+                        String output;
                         try {
                           output = await bind.mainRmmRunScript(name: name);
-                        } finally {
-                          _runningScripts.remove(name);
+                          if (output.isEmpty) output = translate('Done!');
+                        } catch (e) {
+                          output = 'Error: $e';
                         }
+                        _runningScripts.remove(name);
                         if (!mounted) return;
-                        showToast(output.isEmpty ? translate('Done!') : output);
+                        showToast(output);
                         setState(() {});
                       },
                 child: Text(translate('Run')),
