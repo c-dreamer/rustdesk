@@ -38,6 +38,19 @@ function Invoke-RustDeskExe {
     }
 }
 
+function Wait-RustDeskExe {
+    # For commands that start long-lived processes (the tray, the main window):
+    # Start-Process -Wait would wait for those too, i.e. forever, and a redirected
+    # stdout file would be held open by them. Wait for this process only.
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [Parameter(Mandatory)][string[]]$ArgumentList
+    )
+    $argString = ($ArgumentList | ForEach-Object { Format-RustDeskArgument $_ }) -join ' '
+    $process = Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -PassThru
+    $process.WaitForExit()
+}
+
 function Confirm-RustDeskOutput {
     # rustdesk.exe exits 0 either way and reports problems as text (e.g. "Installation
     # and administrative privileges required!"), so compare with what success prints.
@@ -126,21 +139,21 @@ function Install-RustDeskService {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList '--install-service'
+    Wait-RustDeskExe -Exe $exe -ArgumentList '--install-service'
 }
 
 function Uninstall-RustDeskService {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList '--uninstall-service'
+    Wait-RustDeskExe -Exe $exe -ArgumentList '--uninstall-service'
 }
 
 function Update-RustDeskApp {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList '--update'
+    Wait-RustDeskExe -Exe $exe -ArgumentList '--update'
 }
 
 function Uninstall-RustDeskApp {
@@ -148,7 +161,7 @@ function Uninstall-RustDeskApp {
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
     if ($PSCmdlet.ShouldProcess($exe, "Uninstall RustDesk")) {
-        Invoke-RustDeskExe -Exe $exe -ArgumentList '--uninstall'
+        Wait-RustDeskExe -Exe $exe -ArgumentList '--uninstall'
     }
 }
 
