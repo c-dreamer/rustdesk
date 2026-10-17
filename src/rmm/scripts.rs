@@ -225,7 +225,10 @@ fn run_limited(mut cmd: std::process::Command, timeout: std::time::Duration) -> 
         Some(status) if !status.success() => {
             Err(anyhow!("Script exited with {status}: {}", stderr.trim()))
         }
-        Some(_) => Ok(stdout.trim().to_owned()),
+        // powershell -File exits 0 after non-terminating errors and failed native
+        // commands, so on success stderr is the only sign of them; keep it visible.
+        Some(_) if stderr.trim().is_empty() => Ok(stdout.trim().to_owned()),
+        Some(_) => Ok(format!("{}\n[stderr]\n{}", stdout.trim(), stderr.trim())),
     }
 }
 
@@ -310,7 +313,30 @@ fn is_due(last_run: Option<i64>, now: i64, schedule_secs: u64) -> bool {
 
 /// Polls once a minute; a script with `schedule_secs` set runs once that much
 /// time has elapsed since its last run.
+/// Run files of a server that exited mid-script (the service restarts `--server` on
+/// every session change) would otherwise stay next to the library for good.
+fn remove_stale_run_files() {
+    let Some(dir) = store_path().parent().map(|d| d.to_path_buf()) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let own = format!("rmm_script_run_{}_", std::process::id());
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("rmm_script_run_") && !name.starts_with(&own) {
+            if let Err(err) = std::fs::remove_file(entry.path()) {
+                log::warn!("rmm: failed to remove stale {name}: {err}");
+            }
+        }
+    }
+}
+
 pub async fn run_scheduler() {
+    tokio::task::spawn_blocking(remove_stale_run_files)
+        .await
+        .ok();
     let mut last_run = load_last_run();
     let mut timer = crate::rustdesk_interval(tokio::time::interval(SCHEDULER_TICK));
     loop {
@@ -430,6 +456,13 @@ mod tests {
             "background child {} survived the timeout",
             pid.trim()
         );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn stderr_of_a_successful_run_is_kept() {
+        let out = run_limited(sh("echo out; echo oops >&2"), SCRIPT_TIMEOUT).unwrap();
+        assert_eq!(out, "out\n[stderr]\noops");
     }
 
     #[cfg(not(windows))]
