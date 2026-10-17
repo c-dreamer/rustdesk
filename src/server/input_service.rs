@@ -1115,15 +1115,8 @@ pub fn handle_mouse_simulation_(evt: &MouseEvent, conn: i32) {
     }
 
     #[cfg(windows)]
-    if hbb_common::config::Config::get_bool_option(
-        crate::platform::windows::local_input::LOCAL_INPUT_PRIORITY_OPTION,
-    ) {
-        match crate::platform::windows::local_input::arbitrate_remote_mouse() {
-            crate::platform::windows::local_input::RemoteMouseAction::Allow => {}
-            crate::platform::windows::local_input::RemoteMouseAction::Suppress => {
-                return;
-            }
-        }
+    if crate::platform::windows::local_input::suppress_remote_mouse() {
+        return;
     }
 
     #[cfg(windows)]
@@ -1294,11 +1287,7 @@ pub fn handle_mouse_simulation_(evt: &MouseEvent, conn: i32) {
         _ => {}
     }
     #[cfg(windows)]
-    if hbb_common::config::Config::get_bool_option(
-        crate::platform::windows::local_input::LOCAL_INPUT_PRIORITY_OPTION,
-    ) {
-        crate::platform::windows::local_input::record_remote_mouse_injected(evt_type, buttons);
-    }
+    crate::platform::windows::local_input::record_remote_mouse_injected(evt_type, buttons);
     #[cfg(not(target_os = "macos"))]
     for key in to_release {
         en.key_up(key.clone());

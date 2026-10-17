@@ -39,9 +39,31 @@ use crate::common::input::{
     MOUSE_BUTTON_WHEEL, MOUSE_TYPE_DOWN, MOUSE_TYPE_UP,
 };
 
-/// Option key gating this whole feature. `enable-` prefix means `option2bool` defaults
-/// it to on (matches AnyDesk-parity being the expected default); set to "N" to opt out.
-pub(crate) const LOCAL_INPUT_PRIORITY_OPTION: &str = "enable-local-input-priority";
+/// Gates this whole feature. The `enable-` prefix means `option2bool` defaults it to on
+/// (AnyDesk parity being the expected default); set it to "N" to opt out.
+fn is_enabled() -> bool {
+    hbb_common::config::Config::get_bool_option(
+        base::config::keys::OPTION_ENABLE_LOCAL_INPUT_PRIORITY,
+    )
+}
+
+/// The observer stops when the returned value is dropped.
+pub(crate) fn start_observer_if_enabled() -> Option<LocalMouseObserver> {
+    if !is_enabled() {
+        return None;
+    }
+    match start_local_mouse_observer() {
+        Ok(observer) => Some(observer),
+        Err(err) => {
+            log::warn!("Local mouse priority is unavailable: {}", err);
+            None
+        }
+    }
+}
+
+pub(crate) fn suppress_remote_mouse() -> bool {
+    is_enabled() && arbitrate_remote_mouse() == RemoteMouseAction::Suppress
+}
 
 const LOCAL_MOUSE_PRIORITY_TIMEOUT_MS: u64 = 600;
 
@@ -280,6 +302,9 @@ fn local_mouse_has_priority() -> bool {
 }
 
 pub(crate) fn record_remote_mouse_injected(evt_type: i32, buttons: i32) {
+    if !is_enabled() {
+        return;
+    }
     let buttons_to_release = record_remote_mouse_injected_with(
         evt_type,
         buttons,
