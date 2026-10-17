@@ -189,19 +189,26 @@ fn notify(alerts: &[String]) {
 #[cfg(not(windows))]
 fn notify(_alerts: &[String]) {}
 
-/// Entries of `recent` raised at or after `since` (ms), with the newest timestamp among
-/// them. Keyed on time, not on the last entry shown: a whole-map options write can drop
-/// that entry, and then every alert since startup would look new again.
+/// Entries of `recent` raised at or after `since` (ms) that are not in `shown`; `shown`
+/// is updated and pruned to the current list (at most RECENT_ALERTS_KEPT entries).
+/// Remembering entries, not a timestamp, means neither a whole-map options write that
+/// drops one nor a clock stepped back can make old alerts look new.
 #[cfg(any(windows, test))]
-fn new_alerts(recent: &str, since: i64) -> (Vec<String>, Option<i64>) {
+fn new_alerts(
+    recent: &str,
+    since: i64,
+    shown: &mut std::collections::HashSet<String>,
+) -> Vec<String> {
     let stamp = |a: &str| a.split_once(' ').and_then(|(t, _)| t.parse::<i64>().ok());
-    let alerts: Vec<String> = serde_json::from_str::<Vec<String>>(recent)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|a| stamp(a).map_or(false, |t| t >= since))
+    let list: Vec<String> = serde_json::from_str(recent).unwrap_or_default();
+    let fresh: Vec<String> = list
+        .iter()
+        .filter(|a| stamp(a).map_or(false, |t| t >= since) && !shown.contains(*a))
+        .cloned()
         .collect();
-    let newest = alerts.iter().filter_map(|a| stamp(a)).max();
-    (alerts, newest)
+    shown.retain(|a| list.contains(a));
+    shown.extend(fresh.iter().cloned());
+    fresh
 }
 
 /// With hide-tray set, the `--tray` process would exit without an icon, and nothing in
@@ -251,11 +258,12 @@ pub async fn tray_alert_watch() {
     // Filtered by timestamp, not seeded from the current list, because at logon the
     // service may not answer IPC yet and the fallback options carry no alerts.
     let mut since = hbb_common::get_time();
+    let mut shown = std::collections::HashSet::new();
     let mut timer = tokio::time::interval(POLL_INTERVAL);
     loop {
         timer.tick().await;
-        // A clock stepped back (NTP, VM restore) would otherwise hide every new alert
-        // until it caught up with the newest one shown.
+        // A clock stepped back below the tray's start would hide new alerts; `shown`
+        // keeps already-toasted ones from coming back.
         since = since.min(hbb_common::get_time());
         let options = crate::ipc::get_options_async().await;
         if options
@@ -265,15 +273,15 @@ pub async fn tray_alert_watch() {
         {
             continue;
         }
-        let (alerts, newest) = new_alerts(
+        let alerts = new_alerts(
             options
                 .get(keys::OPTION_RMM_RECENT_ALERTS)
                 .map_or("", String::as_str),
             since,
+            &mut shown,
         );
-        if let Some(newest) = newest {
+        if !alerts.is_empty() {
             notify(&alerts);
-            since = newest + 1;
         }
     }
 }
@@ -396,14 +404,23 @@ mod tests {
 
     #[test]
     fn new_alerts_skips_old_and_already_shown() {
+        let mut shown = std::collections::HashSet::new();
         let recent = r#"["300 c","300 d","200 b","100 a"]"#;
-        let (alerts, newest) = new_alerts(recent, 150);
-        assert_eq!(alerts, vec!["300 c", "300 d", "200 b"]);
-        assert_eq!(newest, Some(300));
-        // Next poll starts after the newest shown; a dropped entry changes nothing.
-        let (alerts, newest) = new_alerts(r#"["300 d","200 b"]"#, 301);
-        assert!(alerts.is_empty() && newest.is_none());
-        assert_eq!(new_alerts("", 0), (vec![], None));
+        assert_eq!(
+            new_alerts(recent, 150, &mut shown),
+            vec!["300 c", "300 d", "200 b"]
+        );
+        assert!(new_alerts(recent, 150, &mut shown).is_empty());
+        // A dropped entry, or a clock stepped back (lower `since`), shows nothing again.
+        assert!(new_alerts(r#"["300 d","200 b"]"#, 150, &mut shown).is_empty());
+        assert!(new_alerts(r#"["300 d","200 b"]"#, 0, &mut shown).is_empty());
+        // Only a genuinely new entry is shown, and `shown` stays bounded by the list.
+        assert_eq!(
+            new_alerts(r#"["400 e","300 d"]"#, 0, &mut shown),
+            vec!["400 e"]
+        );
+        assert_eq!(shown.len(), 2);
+        assert!(new_alerts("", 0, &mut shown).is_empty());
     }
 
     #[test]

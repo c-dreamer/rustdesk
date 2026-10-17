@@ -2753,7 +2753,7 @@ class _ToolsState extends State<_Tools> {
               final text = ctrl.text.trim();
               final value = double.tryParse(text);
               if (text.isNotEmpty &&
-                  (value == null || value < 1 || value > 100)) {
+                  (value == null || value.isNaN || value < 1 || value > 100)) {
                 showToast(
                     translate('Thresholds must be numbers from 1 to 100'));
                 return;
@@ -2821,8 +2821,12 @@ class _ToolsState extends State<_Tools> {
                     : () async {
                         final name = s['name'].toString();
                         setState(() => _runningScripts.add(name));
-                        final output = await bind.mainRmmRunScript(name: name);
-                        _runningScripts.remove(name);
+                        final String output;
+                        try {
+                          output = await bind.mainRmmRunScript(name: name);
+                        } finally {
+                          _runningScripts.remove(name);
+                        }
                         if (!mounted) return;
                         showToast(output.isEmpty ? translate('Done!') : output);
                         setState(() {});

@@ -311,8 +311,6 @@ fn is_due(last_run: Option<i64>, now: i64, schedule_secs: u64) -> bool {
     })
 }
 
-/// Polls once a minute; a script with `schedule_secs` set runs once that much
-/// time has elapsed since its last run.
 /// Run files of a server that exited mid-script (the service restarts `--server` on
 /// every session change) would otherwise stay next to the library for good.
 fn remove_stale_run_files() {
@@ -322,10 +320,18 @@ fn remove_stale_run_files() {
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return;
     };
-    let own = format!("rmm_script_run_{}_", std::process::id());
+    // Another process (CLI, Tools tab) may be starting a run right now; no live run
+    // file can be older than the timeout.
+    let stale_after = SCRIPT_TIMEOUT + std::time::Duration::from_secs(300);
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with("rmm_script_run_") && !name.starts_with(&own) {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map_or(false, |age| age > stale_after);
+        if name.starts_with("rmm_script_run_") && stale {
             if let Err(err) = std::fs::remove_file(entry.path()) {
                 log::warn!("rmm: failed to remove stale {name}: {err}");
             }
@@ -333,6 +339,8 @@ fn remove_stale_run_files() {
     }
 }
 
+/// Polls once a minute; a script with `schedule_secs` set runs once that much
+/// time has elapsed since its last run.
 pub async fn run_scheduler() {
     tokio::task::spawn_blocking(remove_stale_run_files)
         .await
