@@ -33,17 +33,20 @@ pub fn alerts_status() -> Value {
     json!({"config": config, "recent_alerts": crate::rmm::monitor::recent_alerts()})
 }
 
+/// JSON either way, so `ConvertFrom-Json` callers see the reason, not a parse error.
 pub fn list_scripts() -> String {
     match crate::rmm::scripts::list() {
         Ok(list) => list.to_string(),
-        Err(err) => err.to_string(),
+        Err(err) => json!({ "error": err.to_string() }).to_string(),
     }
 }
 
+/// Failures carry an `Error: ` prefix (as the Tools tab's FFI does), since the process
+/// exits 0 either way and a script's own output can be any text.
 pub fn run_script(name: &str) -> String {
     match crate::rmm::scripts::run(name) {
         Ok(output) => output,
-        Err(err) => err.to_string(),
+        Err(err) => format!("Error: {err}"),
     }
 }
 

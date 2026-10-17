@@ -26,12 +26,20 @@ function Invoke-RustDeskExe {
     # explicit redirect file does.
     param(
         [Parameter(Mandatory)][string]$Exe,
-        [Parameter(Mandatory)][AllowEmptyString()][string[]]$ArgumentList
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$ArgumentList,
+        # Wait for rustdesk.exe only, not processes it (or a script it runs) leaves behind;
+        # Start-Process -Wait waits for the whole process tree.
+        [switch]$ExeOnly
     )
     $outFile = [System.IO.Path]::GetTempFileName()
     try {
         $argString = ($ArgumentList | ForEach-Object { Format-RustDeskArgument $_ }) -join ' '
-        Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -Wait -RedirectStandardOutput $outFile
+        if ($ExeOnly) {
+            $process = Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -PassThru -RedirectStandardOutput $outFile
+            $process.WaitForExit()
+        } else {
+            Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -Wait -RedirectStandardOutput $outFile
+        }
         Get-Content -Raw -Encoding UTF8 -Path $outFile
     } finally {
         Remove-Item -Path $outFile -ErrorAction SilentlyContinue
@@ -49,6 +57,25 @@ function Wait-RustDeskExe {
     $argString = ($ArgumentList | ForEach-Object { Format-RustDeskArgument $_ }) -join ' '
     $process = Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -PassThru
     $process.WaitForExit()
+}
+
+function ConvertFrom-RustDeskJson {
+    # A failure is plain text or {"error": ...}; surface it instead of a JSON parse error.
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    try {
+        $parsed = $Text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Error "$Text".Trim()
+        return
+    }
+    if ($parsed -is [System.Management.Automation.PSCustomObject] -and
+        @($parsed.PSObject.Properties).Count -eq 1 -and $null -ne $parsed.error) {
+        Write-Error $parsed.error
+        return
+    }
+    # Returned through a variable, so Windows PowerShell 5.1 sends an array's items
+    # down the pipeline one by one, as PowerShell 7 does.
+    $parsed
 }
 
 function Confirm-RustDeskOutput {
@@ -73,7 +100,7 @@ function Get-RustDeskStatus {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--status" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--status")
 }
 
 function Get-RustDeskOptions {
@@ -88,7 +115,7 @@ function Get-RustDeskPeers {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-peers" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-peers")
 }
 
 function Set-RustDeskOption {
@@ -169,14 +196,14 @@ function Get-RustDeskInventory {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--inventory" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--inventory")
 }
 
 function Get-RustDeskAlerts {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--alerts-status" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--alerts-status")
 }
 
 function Set-RustDeskThreshold {
@@ -196,7 +223,7 @@ function Get-RustDeskScripts {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-scripts" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-scripts")
 }
 
 function Add-RustDeskScript {
@@ -221,7 +248,12 @@ function Invoke-RustDeskScript {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--run-script", $Name
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList "--run-script", $Name -ExeOnly
+    if ("$out".StartsWith('Error: ')) {
+        Write-Error "$out".Substring(7).Trim()
+    } else {
+        $out
+    }
 }
 
 function Enable-RustDeskMonitor {

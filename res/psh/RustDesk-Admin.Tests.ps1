@@ -88,6 +88,34 @@ $threw = try {
 } catch { $true }
 Assert $threw "any other --set-id output is an error"
 
+# Script and JSON commands: failures must surface as errors, not as data.
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { "Error: No such script: x" }
+        Invoke-RustDeskScript -Name x -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $true }
+Assert $threw "a failed --run-script is an error"
+$out = & $mod {
+    function Invoke-RustDeskExe { "hello" }
+    Invoke-RustDeskScript -Name x -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+}
+Assert ($out -eq "hello") "a script's own output is returned"
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { '{"error":"Administrator privileges required to use the script library"}' }
+        Get-RustDeskScripts -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $_.Exception.Message -like "*Administrator*" }
+Assert $threw "Get-RustDeskScripts reports the service's error, not a JSON parse error"
+$count = (& $mod {
+    function Invoke-RustDeskExe { '[{"name":"a","schedule_secs":null},{"name":"b","schedule_secs":60}]' }
+    Get-RustDeskScripts -Exe "C:\fake\rustdesk.exe"
+} | Measure-Object).Count
+Assert ($count -eq 2) "a JSON array reaches the pipeline item by item"
+
 if ($failures -gt 0) {
     Write-Error "$failures check(s) failed"
     exit 1
