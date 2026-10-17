@@ -1092,7 +1092,7 @@ pub fn main_rmm_list_scripts() -> String {
         crate::rmm::scripts::list()
             .unwrap_or_else(|err| {
                 log::warn!("rmm: failed to list scripts: {err}");
-                serde_json::json!([])
+                serde_json::json!({ "error": err.to_string() })
             })
             .to_string()
     }

@@ -2564,8 +2564,15 @@ class _ToolsState extends State<_Tools> {
             (jsonDecode(await bind.mainRmmRecentAlerts()) as List).cast<String>();
       } catch (_) {}
       List<dynamic> scripts = [];
+      // e.g. "Administrator privileges required": the library is admin-only when installed.
+      String scriptsError = '';
       try {
-        scripts = jsonDecode(await bind.mainRmmListScripts()) as List<dynamic>;
+        final listed = jsonDecode(await bind.mainRmmListScripts());
+        if (listed is List) {
+          scripts = listed;
+        } else if (listed is Map) {
+          scriptsError = '${listed['error'] ?? ''}';
+        }
       } catch (_) {}
       return {
         'myId': myId,
@@ -2574,6 +2581,7 @@ class _ToolsState extends State<_Tools> {
         'inventory': inventory,
         'recentAlerts': recentAlerts,
         'scripts': scripts,
+        'scriptsError': scriptsError,
       };
     }(), hasData: (data) {
       final myId = data['myId'].toString();
@@ -2582,6 +2590,7 @@ class _ToolsState extends State<_Tools> {
       final inventory = data['inventory'] as Map<String, dynamic>;
       final recentAlerts = data['recentAlerts'] as List<String>;
       final scripts = data['scripts'] as List<dynamic>;
+      final scriptsError = data['scriptsError'] as String;
       final diagnostics =
           'ID: $myId\nVersion: $version\nOptions: ${jsonEncode(options)}';
       final monitorEnabled = options['rmm-monitor-enabled'] == 'Y';
@@ -2628,7 +2637,7 @@ class _ToolsState extends State<_Tools> {
               _buildMonitoring(monitorEnabled, recentAlerts),
             ]),
             _Card(title: translate('Scripts'), children: [
-              _buildScripts(scripts, scriptsEnabled),
+              _buildScripts(scripts, scriptsEnabled, scriptsError),
             ]),
             _Card(title: translate('AI agents'), children: [
               _buildAgentWrite(agentWrite),
@@ -2756,7 +2765,8 @@ class _ToolsState extends State<_Tools> {
     ).marginOnly(left: _kContentHMargin);
   }
 
-  Widget _buildScripts(List<dynamic> scripts, bool scriptsEnabled) {
+  Widget _buildScripts(
+      List<dynamic> scripts, bool scriptsEnabled, String scriptsError) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2775,6 +2785,9 @@ class _ToolsState extends State<_Tools> {
             Text(translate('Enable scheduled scripts')),
           ],
         ),
+        if (scriptsError.isNotEmpty)
+          SelectionArea(child: Text(scriptsError))
+              .marginSymmetric(vertical: 4.0),
         ...scripts.map((s) => ListTile(
               dense: true,
               title: Text('${s['name']}'),
