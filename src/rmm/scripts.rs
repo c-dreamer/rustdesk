@@ -1,6 +1,7 @@
 //! Named script library: run a PowerShell (Windows) / shell (elsewhere) body
 //! on demand via `--run-script`, or on its own schedule when one is set.
 
+use base::config::keys;
 use hbb_common::{anyhow::anyhow, config::Config, log, tokio, ResultType};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -8,7 +9,6 @@ use std::collections::HashMap;
 
 const SCRIPTS_FILE: &str = "rmm_scripts.json";
 const LAST_RUN_FILE: &str = "rmm_scripts_last_run.json";
-const SCRIPTS_ENABLED_OPTION: &str = "rmm-scripts-enabled";
 const SCHEDULER_TICK: std::time::Duration = std::time::Duration::from_secs(60);
 const SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 const OUTPUT_CAP: usize = 64 * 1024;
@@ -298,7 +298,7 @@ pub async fn run_scheduler() {
     let mut timer = crate::rustdesk_interval(tokio::time::interval(SCHEDULER_TICK));
     loop {
         timer.tick().await;
-        if !crate::rmm::is_enabled(SCRIPTS_ENABLED_OPTION) {
+        if !crate::rmm::is_enabled(keys::OPTION_RMM_SCRIPTS_ENABLED) {
             continue;
         }
         let scripts = match load() {

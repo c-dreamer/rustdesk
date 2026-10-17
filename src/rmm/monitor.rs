@@ -2,21 +2,15 @@
 //! `rmm-monitor-enabled` option (off by default). Runs on its own thread in the
 //! server/service process.
 
+use base::config::keys;
 #[cfg(windows)]
 use hbb_common::{config, tokio};
 use hbb_common::{config::Config, log, sysinfo::System};
 #[cfg(windows)]
 use tauri_winrt_notification::{Duration as ToastDuration, Sound, Toast};
 
-const MONITOR_ENABLED_OPTION: &str = "rmm-monitor-enabled";
-const CPU_THRESHOLD_OPTION: &str = "rmm-cpu-threshold";
-const MEM_THRESHOLD_OPTION: &str = "rmm-mem-threshold";
-const DISK_THRESHOLD_OPTION: &str = "rmm-disk-threshold";
-#[cfg(windows)]
-const WATCH_SERVICES_OPTION: &str = "rmm-watch-services";
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const ALERTS_LOG_FILE: &str = "rmm_alerts.log";
-const RECENT_ALERTS_OPTION: &str = "rmm-recent-alerts";
 const RECENT_ALERTS_KEPT: usize = 20;
 
 fn option_threshold(key: &str) -> Option<f32> {
@@ -85,7 +79,7 @@ fn newly_breached(
 
 #[cfg(windows)]
 fn down_services() -> Vec<String> {
-    watch_list(&Config::get_option(WATCH_SERVICES_OPTION))
+    watch_list(&Config::get_option(keys::OPTION_RMM_WATCH_SERVICES))
         .filter(|s| !crate::platform::is_service_running(s))
         .map(str::to_owned)
         .collect()
@@ -126,7 +120,7 @@ fn alerts_log_path() -> std::path::PathBuf {
 /// the latest alerts are also mirrored into an option, which every client reads over IPC.
 pub fn recent_alerts() -> Vec<String> {
     crate::ipc::get_options()
-        .get(RECENT_ALERTS_OPTION)
+        .get(keys::OPTION_RMM_RECENT_ALERTS)
         .and_then(|v| serde_json::from_str(v).ok())
         .unwrap_or_default()
 }
@@ -140,9 +134,13 @@ fn merge_recent(existing: &str, now: i64, alerts: &[String]) -> Vec<String> {
 }
 
 fn remember_alerts(now: i64, alerts: &[String]) {
-    let recent = merge_recent(&Config::get_option(RECENT_ALERTS_OPTION), now, alerts);
+    let recent = merge_recent(
+        &Config::get_option(keys::OPTION_RMM_RECENT_ALERTS),
+        now,
+        alerts,
+    );
     if let Ok(json) = serde_json::to_string(&recent) {
-        Config::set_option(RECENT_ALERTS_OPTION.to_owned(), json);
+        Config::set_option(keys::OPTION_RMM_RECENT_ALERTS.to_owned(), json);
     }
 }
 
@@ -212,7 +210,7 @@ fn new_alerts(recent: &str, since: i64, seen: Option<&str>) -> Vec<String> {
 #[cfg(windows)]
 pub fn tray_alert_watch_hidden() {
     let monitoring = crate::ipc::get_options()
-        .get(MONITOR_ENABLED_OPTION)
+        .get(keys::OPTION_RMM_MONITOR_ENABLED)
         .map_or(false, |v| v == "Y");
     if crate::platform::is_installed() && monitoring {
         tray_alert_watch();
@@ -232,11 +230,17 @@ pub async fn tray_alert_watch() {
     loop {
         timer.tick().await;
         let options = crate::ipc::get_options_async().await;
-        if options.get(MONITOR_ENABLED_OPTION).map(String::as_str) != Some("Y") {
+        if options
+            .get(keys::OPTION_RMM_MONITOR_ENABLED)
+            .map(String::as_str)
+            != Some("Y")
+        {
             continue;
         }
         let alerts = new_alerts(
-            options.get(RECENT_ALERTS_OPTION).map_or("", String::as_str),
+            options
+                .get(keys::OPTION_RMM_RECENT_ALERTS)
+                .map_or("", String::as_str),
             started,
             seen.as_deref(),
         );
@@ -254,7 +258,7 @@ pub fn run() {
     let mut active = std::collections::HashSet::new();
     loop {
         std::thread::sleep(POLL_INTERVAL);
-        if !crate::rmm::is_enabled(MONITOR_ENABLED_OPTION) {
+        if !crate::rmm::is_enabled(keys::OPTION_RMM_MONITOR_ENABLED) {
             active.clear();
             continue;
         }
@@ -271,9 +275,9 @@ pub fn run() {
             cpu_pct,
             mem_pct,
             disk.as_ref().map(|(m, p)| (m.as_str(), *p)),
-            option_threshold(CPU_THRESHOLD_OPTION),
-            option_threshold(MEM_THRESHOLD_OPTION),
-            option_threshold(DISK_THRESHOLD_OPTION),
+            option_threshold(keys::OPTION_RMM_CPU_THRESHOLD),
+            option_threshold(keys::OPTION_RMM_MEM_THRESHOLD),
+            option_threshold(keys::OPTION_RMM_DISK_THRESHOLD),
             &down_services(),
         );
         let alerts = newly_breached(&mut active, alerts);

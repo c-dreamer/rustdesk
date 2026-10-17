@@ -3,12 +3,11 @@
 //! tooling headlessly. No listening port. Read tools are always available; tools that
 //! change state require the `rmm-agent-write` option, which the agent cannot set itself.
 
+use base::config::keys;
 use hbb_common::{config, tokio};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
-const AGENT_WRITE_OPTION: &str = "rmm-agent-write";
-const RECENT_ALERTS_OPTION: &str = "rmm-recent-alerts";
 const PROTOCOL_VERSION: &str = "2025-06-18";
 // 2025-03-26 is left out: it allows JSON-RPC batches, which this server does not handle.
 const SUPPORTED_VERSIONS: &[&str] = &[PROTOCOL_VERSION, "2024-11-05"];
@@ -37,7 +36,7 @@ pub fn serve(cli_settings_disabled: bool) {
 }
 
 fn write_allowed(cli_settings_disabled: bool) -> bool {
-    !cli_settings_disabled && server_option(AGENT_WRITE_OPTION).as_deref() == Some("Y")
+    !cli_settings_disabled && server_option(keys::OPTION_RMM_AGENT_WRITE).as_deref() == Some("Y")
 }
 
 /// Fails closed: `ipc::get_options` falls back to the caller's own (user-writable)
@@ -155,7 +154,8 @@ fn require_write(write_allowed: &dyn Fn() -> bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Write tools are disabled. A human must run: rustdesk --option {AGENT_WRITE_OPTION} Y"
+            "Write tools are disabled. A human must turn on Settings > Tools > AI agents, or run: rustdesk --option {} Y",
+            keys::OPTION_RMM_AGENT_WRITE
         ))
     }
 }
@@ -164,14 +164,16 @@ fn require_write(write_allowed: &dyn Fn() -> bool) -> Result<(), String> {
 /// library as SYSTEM) and the agent's own gate stay with a human.
 fn check_settable(key: &str, value: &str) -> Result<(), String> {
     let ok = match key {
-        "rmm-monitor-enabled" => value == "Y" || value == "N",
-        "rmm-cpu-threshold" | "rmm-mem-threshold" | "rmm-disk-threshold" => {
+        keys::OPTION_RMM_MONITOR_ENABLED => value == "Y" || value == "N",
+        keys::OPTION_RMM_CPU_THRESHOLD
+        | keys::OPTION_RMM_MEM_THRESHOLD
+        | keys::OPTION_RMM_DISK_THRESHOLD => {
             value.is_empty()
                 || value
                     .parse::<f32>()
                     .map_or(false, |v| (1.0..=100.0).contains(&v))
         }
-        "rmm-watch-services" => value.len() <= 1024 && !value.contains(['\r', '\n']),
+        keys::OPTION_RMM_WATCH_SERVICES => value.len() <= 1024 && !value.contains(['\r', '\n']),
         _ => return Err(format!("Option '{key}' cannot be set by an agent")),
     };
     if ok {
@@ -191,7 +193,9 @@ fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Resu
             let options = crate::ipc::get_options();
             let config: serde_json::Map<String, Value> = options
                 .iter()
-                .filter(|(k, _)| k.starts_with("rmm-") && k.as_str() != RECENT_ALERTS_OPTION)
+                .filter(|(k, _)| {
+                    k.starts_with("rmm-") && k.as_str() != keys::OPTION_RMM_RECENT_ALERTS
+                })
                 .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
                 .collect();
             let recent_alerts = crate::rmm::monitor::recent_alerts();
@@ -265,7 +269,7 @@ mod tests {
 
     #[test]
     fn agent_cannot_open_its_own_gate_or_touch_other_options() {
-        for key in [AGENT_WRITE_OPTION, "custom-rendezvous-server"] {
+        for key in [keys::OPTION_RMM_AGENT_WRITE, "custom-rendezvous-server"] {
             let res = call("set_option", json!({"name": key, "value": "Y"}), true);
             assert_eq!(res["isError"], true, "{key}");
         }

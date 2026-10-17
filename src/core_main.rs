@@ -581,11 +581,11 @@ pub fn core_main() -> Option<Vec<String>> {
         } else if args[0] == "--alerts-status" {
             let options = crate::ipc::get_options();
             let threshold_keys = [
-                "rmm-monitor-enabled",
-                "rmm-cpu-threshold",
-                "rmm-mem-threshold",
-                "rmm-disk-threshold",
-                "rmm-watch-services",
+                keys::OPTION_RMM_MONITOR_ENABLED,
+                keys::OPTION_RMM_CPU_THRESHOLD,
+                keys::OPTION_RMM_MEM_THRESHOLD,
+                keys::OPTION_RMM_DISK_THRESHOLD,
+                keys::OPTION_RMM_WATCH_SERVICES,
             ];
             let thresholds: std::collections::HashMap<_, _> = threshold_keys
                 .iter()
