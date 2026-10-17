@@ -297,6 +297,18 @@ fn record_remote_mouse_injected_with<F: FnOnce() -> bool>(
     local_has_priority: F,
     remote_buttons_down: &AtomicU8,
 ) -> u8 {
+    // handle_mouse_simulation_ injects single-button masks only; recording a combined
+    // mask would make a local takeover release buttons that were never pressed.
+    if !matches!(
+        buttons,
+        MOUSE_BUTTON_LEFT
+            | MOUSE_BUTTON_RIGHT
+            | MOUSE_BUTTON_WHEEL
+            | MOUSE_BUTTON_BACK
+            | MOUSE_BUTTON_FORWARD
+    ) {
+        return 0;
+    }
     let buttons = buttons as u8;
     if evt_type == MOUSE_TYPE_DOWN {
         remote_buttons_down.fetch_or(buttons, Ordering::AcqRel);
@@ -383,6 +395,17 @@ mod tests {
             record_remote_mouse_injected_with(MOUSE_TYPE_UP, MOUSE_BUTTON_LEFT, || true, &buttons),
             0
         );
+    }
+
+    #[test]
+    fn combined_button_masks_are_not_recorded() {
+        let buttons = AtomicU8::new(0);
+        let both = MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT;
+        assert_eq!(
+            record_remote_mouse_injected_with(MOUSE_TYPE_DOWN, both, || false, &buttons),
+            0
+        );
+        assert_eq!(buttons.load(Ordering::Relaxed), 0);
     }
 
     #[test]
