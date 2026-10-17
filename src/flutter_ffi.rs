@@ -1105,7 +1105,7 @@ pub fn main_rmm_list_scripts() -> String {
 pub fn main_rmm_add_script(name: String, body: String) -> String {
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        match crate::rmm::scripts::add(&name, &body, None) {
+        match crate::rmm::scripts::update_body(&name, &body) {
             Ok(()) => "".to_owned(),
             Err(err) => err.to_string(),
         }

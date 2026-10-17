@@ -90,6 +90,21 @@ pub fn add(name: &str, body: &str, schedule_secs: Option<u64>) -> ResultType<()>
     save(&scripts)
 }
 
+/// Adds or replaces a script's body, keeping its schedule: the Tools tab has no schedule
+/// field, so re-saving a scheduled script there must not turn it into on-demand only.
+pub fn update_body(name: &str, body: &str) -> ResultType<()> {
+    let mut scripts = load()?;
+    let schedule_secs = scripts.get(name).and_then(|s| s.schedule_secs);
+    scripts.insert(
+        name.to_owned(),
+        Script {
+            body: body.to_owned(),
+            schedule_secs,
+        },
+    );
+    save(&scripts)
+}
+
 /// The optional schedule argument of `--add-script`: absent means on demand only.
 pub fn parse_schedule_secs(arg: Option<&str>) -> Result<Option<u64>, String> {
     match arg.map(str::parse::<u64>) {

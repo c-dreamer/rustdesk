@@ -2691,6 +2691,7 @@ class _ToolsState extends State<_Tools> {
               onChanged: (v) async {
                 await bind.mainSetOption(
                     key: 'rmm-monitor-enabled', value: v ? 'Y' : 'N');
+                if (!mounted) return;
                 setState(() {});
               },
             ),
@@ -2738,6 +2739,7 @@ class _ToolsState extends State<_Tools> {
             await bind.mainSetOption(
                 key: 'rmm-watch-services',
                 value: _watchServicesCtrl.text.trim());
+            if (!mounted) return;
             setState(() {});
           },
           child: Text(translate('Save')),
@@ -2766,6 +2768,7 @@ class _ToolsState extends State<_Tools> {
               onChanged: (v) async {
                 await bind.mainSetOption(
                     key: 'rmm-scripts-enabled', value: v ? 'Y' : 'N');
+                if (!mounted) return;
                 setState(() {});
               },
             ),
@@ -2813,6 +2816,7 @@ class _ToolsState extends State<_Tools> {
                   : (v) async {
                       await bind.mainSetOption(
                           key: 'rmm-agent-write', value: v ? 'Y' : 'N');
+                      if (!mounted) return;
                       setState(() {});
                     },
             ),
@@ -2859,9 +2863,12 @@ class _ToolsState extends State<_Tools> {
             final err = await bind.mainRmmAddScript(
                 name: name, body: bodyCtrl.text);
             if (err.isNotEmpty) {
+              // Keep the dialog, and the typed body, so the user can retry.
               showToast(err);
+              return;
             }
             close();
+            if (!mounted) return;
             setState(() {});
           }),
         ],
