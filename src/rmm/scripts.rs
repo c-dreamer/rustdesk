@@ -151,15 +151,17 @@ const SCRIPT_EXT: &str = "ps1";
 #[cfg(not(windows))]
 const SCRIPT_EXT: &str = "sh";
 
-// Windows PowerShell 5.1 reads a BOM-less .ps1 as the ANSI code page.
+// Windows PowerShell 5.1 reads a BOM-less .ps1 as the ANSI code page. A body read from
+// a file that already had a BOM (VS Code's default for .ps1) must not get a second one:
+// PowerShell would take it as part of the first command's name and skip that line.
 #[cfg(windows)]
 fn script_file_contents(body: &str) -> String {
-    format!("\u{FEFF}{body}")
+    format!("\u{FEFF}{}", body.trim_start_matches('\u{FEFF}'))
 }
 
 #[cfg(not(windows))]
 fn script_file_contents(body: &str) -> String {
-    body.to_owned()
+    body.trim_start_matches('\u{FEFF}').to_owned()
 }
 
 #[cfg(windows)]
@@ -444,6 +446,25 @@ mod tests {
         assert_eq!(parse_schedule_secs(Some("3600")), Ok(Some(3600)));
         for bad in ["0", "-5", "1h", "", " 60"] {
             assert!(parse_schedule_secs(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_body_saved_with_a_bom_runs_its_first_line() {
+        let body = "\u{FEFF}echo first";
+        assert_eq!(
+            script_file_contents(body).matches('\u{FEFF}').count(),
+            if cfg!(windows) { 1 } else { 0 }
+        );
+        #[cfg(not(windows))]
+        {
+            let dir = std::env::temp_dir().join(format!("rmm-bom-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("bom.sh");
+            std::fs::write(&path, script_file_contents(body)).unwrap();
+            let out = run_limited(script_command(&path), SCRIPT_TIMEOUT);
+            std::fs::remove_dir_all(&dir).ok();
+            assert_eq!(out.unwrap(), "first");
         }
     }
 
