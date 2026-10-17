@@ -41,6 +41,10 @@ On an installed endpoint, scheduled scripts run as SYSTEM. The library therefore
 the service profile (`C:\Windows\ServiceProfiles\LocalService\...\config\rmm_scripts.json`),
 where only admins can write it. Add, list and run scripts from an elevated shell.
 
+On Linux and macOS the scheduler runs in the desktop user's RustDesk, so add scripts as that
+user, without `sudo`; `sudo rustdesk --add-script` writes root's own library, which it never
+reads.
+
 ## AI agents (MCP)
 
 `rustdesk --mcp` runs a Model Context Protocol server over stdio (no listening port),
