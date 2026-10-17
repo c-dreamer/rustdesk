@@ -1,11 +1,10 @@
 //! Background CPU/memory/disk threshold + service-down monitoring, gated by the
-//! `rmm-monitor-enabled` option (off by default). Runs in-process in the
-//! server/service process alongside the rest of RustDesk's background loops
-//! (see `crate::rustdesk_interval` callers elsewhere in this crate).
+//! `rmm-monitor-enabled` option (off by default). Runs on its own thread in the
+//! server/service process.
 
 #[cfg(windows)]
-use hbb_common::config;
-use hbb_common::{config::Config, log, sysinfo::System, tokio};
+use hbb_common::{config, tokio};
+use hbb_common::{config::Config, log, sysinfo::System};
 #[cfg(windows)]
 use tauri_winrt_notification::{Duration as ToastDuration, Sound, Toast};
 
@@ -235,12 +234,13 @@ pub async fn tray_alert_watch() {
     }
 }
 
-pub async fn run() {
+/// Runs on its own thread: disk and service queries, config writes and toasts all
+/// block, and must not stall the async runtime.
+pub fn run() {
     let mut system = System::new();
     let mut active = std::collections::HashSet::new();
-    let mut timer = crate::rustdesk_interval(tokio::time::interval(POLL_INTERVAL));
     loop {
-        timer.tick().await;
+        std::thread::sleep(POLL_INTERVAL);
         if !crate::rmm::is_enabled(MONITOR_ENABLED_OPTION) {
             active.clear();
             continue;
