@@ -214,7 +214,7 @@ function Set-RustDeskThreshold {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][ValidateSet('Cpu', 'Memory', 'Disk')][string]$Metric,
-        [Parameter(Mandatory)][int]$Percent,
+        [Parameter(Mandatory)][ValidateRange(1, 100)][int]$Percent,
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe

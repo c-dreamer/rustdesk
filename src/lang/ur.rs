@@ -807,6 +807,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Monitoring", ""),
         ("Scripts", ""),
         ("Peers", ""),
+        ("Thresholds must be numbers from 1 to 100", ""),
     ].iter().cloned().collect();
 }
 

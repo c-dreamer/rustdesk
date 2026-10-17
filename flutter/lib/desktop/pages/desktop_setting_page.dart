@@ -2523,6 +2523,9 @@ class _ToolsState extends State<_Tools> {
   // Last saved value per field, so a rebuild (e.g. toggling a switch) does not
   // overwrite text the user has typed but not saved yet.
   final Map<String, String> _loadedOptions = {};
+  // A run holds one of the bridge's few worker threads for up to the script timeout;
+  // static so leaving and reopening the tab cannot start a duplicate run.
+  static final Set<String> _runningScripts = {};
   // Same gate as the Safety tab: on an installed endpoint, opening the agent
   // write gate needs elevation or the unlock PIN, so an agent cannot open it.
   bool _agentWriteLocked = bind.mainIsInstalled();
@@ -2740,6 +2743,22 @@ class _ToolsState extends State<_Tools> {
           ).marginSymmetric(vertical: 4.0),
         ElevatedButton(
           onPressed: () async {
+            // The monitor ignores a value it cannot parse, which would silently turn
+            // that check off ("90%", "85,5"); 0 or 150 would always or never fire.
+            for (final ctrl in [
+              _cpuThresholdCtrl,
+              _memThresholdCtrl,
+              _diskThresholdCtrl
+            ]) {
+              final text = ctrl.text.trim();
+              final value = double.tryParse(text);
+              if (text.isNotEmpty &&
+                  (value == null || value < 1 || value > 100)) {
+                showToast(
+                    translate('Thresholds must be numbers from 1 to 100'));
+                return;
+              }
+            }
             await bind.mainSetOption(
                 key: 'rmm-cpu-threshold', value: _cpuThresholdCtrl.text.trim());
             await bind.mainSetOption(
@@ -2797,13 +2816,17 @@ class _ToolsState extends State<_Tools> {
                   ? Text(translate('every {${s['schedule_secs']}}s'))
                   : null,
               trailing: ElevatedButton(
-                onPressed: () async {
-                  final output =
-                      await bind.mainRmmRunScript(name: s['name'].toString());
-                  if (!mounted) return;
-                  showToast(output.isEmpty ? translate('Done!') : output);
-                  setState(() {});
-                },
+                onPressed: _runningScripts.contains(s['name'].toString())
+                    ? null
+                    : () async {
+                        final name = s['name'].toString();
+                        setState(() => _runningScripts.add(name));
+                        final output = await bind.mainRmmRunScript(name: name);
+                        _runningScripts.remove(name);
+                        if (!mounted) return;
+                        showToast(output.isEmpty ? translate('Done!') : output);
+                        setState(() {});
+                      },
                 child: Text(translate('Run')),
               ),
             )),
