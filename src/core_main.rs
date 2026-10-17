@@ -477,13 +477,7 @@ pub fn core_main() -> Option<Vec<String>> {
             println!("{}", crate::ipc::get_id());
             return None;
         } else if args[0] == "--status" {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "id": crate::ipc::get_id(),
-                    "version": crate::VERSION,
-                })
-            );
+            println!("{}", crate::rmm::cli::status());
             return None;
         } else if args[0] == "--set-id" {
             if is_cli_setting_change_disabled() {
@@ -559,18 +553,7 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             return None;
         } else if args[0] == "--list-peers" {
-            let peers: Vec<_> = config::PeerConfig::peers(None)
-                .drain(..)
-                .map(|(id, _, p)| {
-                    serde_json::json!({
-                        "id": id,
-                        "username": p.info.username,
-                        "hostname": p.info.hostname,
-                        "platform": p.info.platform,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string(&peers).unwrap_or_default());
+            println!("{}", crate::rmm::cli::peers());
             return None;
         } else if args[0] == "--inventory" {
             println!(
@@ -579,31 +562,13 @@ pub fn core_main() -> Option<Vec<String>> {
             );
             return None;
         } else if args[0] == "--alerts-status" {
-            let options = crate::ipc::get_options();
-            let threshold_keys = [
-                "rmm-monitor-enabled",
-                "rmm-cpu-threshold",
-                "rmm-mem-threshold",
-                "rmm-disk-threshold",
-                "rmm-watch-services",
-            ];
-            let thresholds: std::collections::HashMap<_, _> = threshold_keys
-                .iter()
-                .map(|k| (k.to_string(), options.get(*k).cloned().unwrap_or_default()))
-                .collect();
-            println!(
-                "{}",
-                serde_json::json!({"config": thresholds, "recent_alerts": crate::rmm::monitor::recent_alerts()})
-            );
+            println!("{}", crate::rmm::cli::alerts_status());
             return None;
         } else if args[0] == "--mcp" {
             crate::rmm::mcp::serve(is_cli_setting_change_disabled());
             return None;
         } else if args[0] == "--list-scripts" {
-            match crate::rmm::scripts::list() {
-                Ok(list) => println!("{}", list),
-                Err(err) => println!("{}", err),
-            }
+            println!("{}", crate::rmm::cli::list_scripts());
             return None;
         } else if args[0] == "--run-script" {
             if is_cli_setting_change_disabled() {
@@ -611,10 +576,7 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             }
             if args.len() == 2 {
-                match crate::rmm::scripts::run(&args[1]) {
-                    Ok(output) => println!("{}", output),
-                    Err(err) => println!("{}", err),
-                }
+                println!("{}", crate::rmm::cli::run_script(&args[1]));
             }
             return None;
         } else if args[0] == "--add-script" {
@@ -623,21 +585,8 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             }
             if args.len() == 3 || args.len() == 4 {
-                let schedule_secs = match args.get(3).map(|s| s.parse::<u64>()) {
-                    Some(Ok(0)) | Some(Err(_)) => {
-                        println!("Schedule must be a positive number of seconds");
-                        return None;
-                    }
-                    Some(Ok(secs)) => Some(secs),
-                    None => None,
-                };
-                match std::fs::read_to_string(&args[2]) {
-                    Ok(body) => match crate::rmm::scripts::add(&args[1], &body, schedule_secs) {
-                        Ok(()) => println!("Done!"),
-                        Err(err) => println!("{}", err),
-                    },
-                    Err(err) => println!("Failed to read {}: {}", args[2], err),
-                }
+                let schedule = args.get(3).map(String::as_str);
+                println!("{}", crate::rmm::cli::add_script(&args[1], &args[2], schedule));
             }
             return None;
         } else if args[0] == "--assign" {
@@ -985,6 +934,8 @@ fn is_user_main_ipc_scope_cli_command(args: &[String]) -> bool {
             | Some("--config")
             | Some("--option")
             | Some("--list-options")
+            | Some("--status")
+            | Some("--alerts-status")
             | Some("--assign")
             | Some("--deploy")
     )
@@ -1033,6 +984,8 @@ mod tests {
             "--config",
             "--option",
             "--list-options",
+            "--status",
+            "--alerts-status",
             "--assign",
             "--deploy",
         ] {
@@ -1046,8 +999,10 @@ mod tests {
             "--cm",
             "--check-hwcodec-config",
             "--connect",
-            "--status",
             "--list-peers",
+            // Under sudo the write gate must come from root's own config, not from a
+            // user-run server whose options any user process can change.
+            "--mcp",
         ] {
             assert!(!is_user_main_ipc_scope_cli_command(&args(&[command])));
         }

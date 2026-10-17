@@ -78,7 +78,7 @@ class DesktopSettingPage extends StatefulWidget {
         !bind.isDisableSettings() &&
         bind.mainGetBuildinOption(key: kOptionHideRemotePrinterSetting) != 'Y')
       SettingsTabKey.printer,
-    SettingsTabKey.tools,
+    if (!isWeb && !bind.isDisableSettings()) SettingsTabKey.tools,
     SettingsTabKey.about,
   ];
 
@@ -2520,6 +2520,24 @@ class _ToolsState extends State<_Tools> {
   final _memThresholdCtrl = TextEditingController();
   final _diskThresholdCtrl = TextEditingController();
   final _watchServicesCtrl = TextEditingController();
+  // Last saved value per field, so a rebuild (e.g. toggling a switch) does not
+  // overwrite text the user has typed but not saved yet.
+  final Map<String, String> _loadedOptions = {};
+  // A run holds one of the bridge's few worker threads for up to the script timeout;
+  // static so leaving and reopening the tab cannot start a duplicate run.
+  static final Set<String> _runningScripts = {};
+  // Same gate as the Safety tab: on an installed endpoint, opening the agent
+  // write gate needs elevation or the unlock PIN, so an agent cannot open it.
+  bool _agentWriteLocked = bind.mainIsInstalled();
+
+  void _syncField(
+      TextEditingController ctrl, Map<String, dynamic> options, String key) {
+    final value = options[key]?.toString() ?? '';
+    if (_loadedOptions[key] != value) {
+      _loadedOptions[key] = value;
+      ctrl.text = value;
+    }
+  }
 
   @override
   void dispose() {
@@ -2549,8 +2567,15 @@ class _ToolsState extends State<_Tools> {
             (jsonDecode(await bind.mainRmmRecentAlerts()) as List).cast<String>();
       } catch (_) {}
       List<dynamic> scripts = [];
+      // e.g. "Administrator privileges required": the library is admin-only when installed.
+      String scriptsError = '';
       try {
-        scripts = jsonDecode(await bind.mainRmmListScripts()) as List<dynamic>;
+        final listed = jsonDecode(await bind.mainRmmListScripts());
+        if (listed is List) {
+          scripts = listed;
+        } else if (listed is Map) {
+          scriptsError = '${listed['error'] ?? ''}';
+        }
       } catch (_) {}
       return {
         'myId': myId,
@@ -2559,6 +2584,7 @@ class _ToolsState extends State<_Tools> {
         'inventory': inventory,
         'recentAlerts': recentAlerts,
         'scripts': scripts,
+        'scriptsError': scriptsError,
       };
     }(), hasData: (data) {
       final myId = data['myId'].toString();
@@ -2567,14 +2593,16 @@ class _ToolsState extends State<_Tools> {
       final inventory = data['inventory'] as Map<String, dynamic>;
       final recentAlerts = data['recentAlerts'] as List<String>;
       final scripts = data['scripts'] as List<dynamic>;
+      final scriptsError = data['scriptsError'] as String;
       final diagnostics =
           'ID: $myId\nVersion: $version\nOptions: ${jsonEncode(options)}';
       final monitorEnabled = options['rmm-monitor-enabled'] == 'Y';
       final scriptsEnabled = options['rmm-scripts-enabled'] == 'Y';
-      _cpuThresholdCtrl.text = options['rmm-cpu-threshold']?.toString() ?? '';
-      _memThresholdCtrl.text = options['rmm-mem-threshold']?.toString() ?? '';
-      _diskThresholdCtrl.text = options['rmm-disk-threshold']?.toString() ?? '';
-      _watchServicesCtrl.text = options['rmm-watch-services']?.toString() ?? '';
+      final agentWrite = options['rmm-agent-write'] == 'Y';
+      _syncField(_cpuThresholdCtrl, options, 'rmm-cpu-threshold');
+      _syncField(_memThresholdCtrl, options, 'rmm-mem-threshold');
+      _syncField(_diskThresholdCtrl, options, 'rmm-disk-threshold');
+      _syncField(_watchServicesCtrl, options, 'rmm-watch-services');
 
       return SingleChildScrollView(
         child: Column(
@@ -2612,7 +2640,10 @@ class _ToolsState extends State<_Tools> {
               _buildMonitoring(monitorEnabled, recentAlerts),
             ]),
             _Card(title: translate('Scripts'), children: [
-              _buildScripts(scripts, scriptsEnabled),
+              _buildScripts(scripts, scriptsEnabled, scriptsError),
+            ]),
+            _Card(title: translate('AI agents'), children: [
+              _buildAgentWrite(agentWrite),
             ]),
             _Card(title: translate('Peers'), children: [
               Text(translate(
@@ -2672,6 +2703,7 @@ class _ToolsState extends State<_Tools> {
               onChanged: (v) async {
                 await bind.mainSetOption(
                     key: 'rmm-monitor-enabled', value: v ? 'Y' : 'N');
+                if (!mounted) return;
                 setState(() {});
               },
             ),
@@ -2702,13 +2734,31 @@ class _ToolsState extends State<_Tools> {
             )),
           ],
         ).marginSymmetric(vertical: 4.0),
-        TextField(
-          controller: _watchServicesCtrl,
-          decoration: InputDecoration(
-              labelText: translate('Watched services (comma-separated)')),
-        ).marginSymmetric(vertical: 4.0),
+        // Service checks exist only on Windows (monitor.rs down_services).
+        if (isWindows)
+          TextField(
+            controller: _watchServicesCtrl,
+            decoration: InputDecoration(
+                labelText: translate('Watched services (comma-separated)')),
+          ).marginSymmetric(vertical: 4.0),
         ElevatedButton(
           onPressed: () async {
+            // The monitor ignores a value it cannot parse, which would silently turn
+            // that check off ("90%", "85,5"); 0 or 150 would always or never fire.
+            for (final ctrl in [
+              _cpuThresholdCtrl,
+              _memThresholdCtrl,
+              _diskThresholdCtrl
+            ]) {
+              final text = ctrl.text.trim();
+              final value = double.tryParse(text);
+              if (text.isNotEmpty &&
+                  (value == null || value.isNaN || value < 1 || value > 100)) {
+                showToast(
+                    translate('Thresholds must be numbers from 1 to 100'));
+                return;
+              }
+            }
             await bind.mainSetOption(
                 key: 'rmm-cpu-threshold', value: _cpuThresholdCtrl.text.trim());
             await bind.mainSetOption(
@@ -2719,6 +2769,7 @@ class _ToolsState extends State<_Tools> {
             await bind.mainSetOption(
                 key: 'rmm-watch-services',
                 value: _watchServicesCtrl.text.trim());
+            if (!mounted) return;
             setState(() {});
           },
           child: Text(translate('Save')),
@@ -2735,7 +2786,8 @@ class _ToolsState extends State<_Tools> {
     ).marginOnly(left: _kContentHMargin);
   }
 
-  Widget _buildScripts(List<dynamic> scripts, bool scriptsEnabled) {
+  Widget _buildScripts(
+      List<dynamic> scripts, bool scriptsEnabled, String scriptsError) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2747,26 +2799,40 @@ class _ToolsState extends State<_Tools> {
               onChanged: (v) async {
                 await bind.mainSetOption(
                     key: 'rmm-scripts-enabled', value: v ? 'Y' : 'N');
+                if (!mounted) return;
                 setState(() {});
               },
             ),
             Text(translate('Enable scheduled scripts')),
           ],
         ),
+        if (scriptsError.isNotEmpty)
+          SelectionArea(child: Text(scriptsError))
+              .marginSymmetric(vertical: 4.0),
         ...scripts.map((s) => ListTile(
               dense: true,
               title: Text('${s['name']}'),
               subtitle: s['schedule_secs'] != null
-                  ? Text('${translate('every')} ${s['schedule_secs']}s')
+                  ? Text(translate('every {${s['schedule_secs']}}s'))
                   : null,
               trailing: ElevatedButton(
-                onPressed: () async {
-                  final output =
-                      await bind.mainRmmRunScript(name: s['name'].toString());
-                  if (!mounted) return;
-                  showToast(output.isEmpty ? translate('Done!') : output);
-                  setState(() {});
-                },
+                onPressed: _runningScripts.contains(s['name'].toString())
+                    ? null
+                    : () async {
+                        final name = s['name'].toString();
+                        setState(() => _runningScripts.add(name));
+                        String output;
+                        try {
+                          output = await bind.mainRmmRunScript(name: name);
+                          if (output.isEmpty) output = translate('Done!');
+                        } catch (e) {
+                          output = 'Error: $e';
+                        }
+                        _runningScripts.remove(name);
+                        if (!mounted) return;
+                        showToast(output);
+                        setState(() {});
+                      },
                 child: Text(translate('Run')),
               ),
             )),
@@ -2774,6 +2840,35 @@ class _ToolsState extends State<_Tools> {
           onPressed: () => _showAddScriptDialog(),
           child: Text(translate('Add script')),
         ).marginSymmetric(vertical: 4.0),
+      ],
+    ).marginOnly(left: _kContentHMargin);
+  }
+
+  Widget _buildAgentWrite(bool agentWrite) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _lock(_agentWriteLocked, 'Unlock Security Settings', () {
+          setState(() => _agentWriteLocked = false);
+        }),
+        Row(
+          children: [
+            Switch(
+              value: agentWrite,
+              onChanged: _agentWriteLocked
+                  ? null
+                  : (v) async {
+                      await bind.mainSetOption(
+                          key: 'rmm-agent-write', value: v ? 'Y' : 'N');
+                      if (!mounted) return;
+                      setState(() {});
+                    },
+            ),
+            Expanded(
+                child: Text(translate(
+                    'Allow AI agents to run scripts and change monitoring settings'))),
+          ],
+        ),
       ],
     ).marginOnly(left: _kContentHMargin);
   }
@@ -2812,9 +2907,12 @@ class _ToolsState extends State<_Tools> {
             final err = await bind.mainRmmAddScript(
                 name: name, body: bodyCtrl.text);
             if (err.isNotEmpty) {
+              // Keep the dialog, and the typed body, so the user can retry.
               showToast(err);
+              return;
             }
             close();
+            if (!mounted) return;
             setState(() {});
           }),
         ],

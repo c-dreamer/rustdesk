@@ -17,7 +17,7 @@ use std::{
 use winapi::{
     ctypes::c_int,
     shared::{
-        minwindef::{FALSE, HMODULE, LPARAM, LRESULT, WPARAM},
+        minwindef::{FALSE, HIWORD, HMODULE, LPARAM, LRESULT, WPARAM},
         ntdef::NULL,
     },
     um::{
@@ -29,7 +29,8 @@ use winapi::{
             CallNextHookEx, GetMessageA, PostThreadMessageA, SendInput, SetWindowsHookExA,
             UnhookWindowsHookEx, HC_ACTION, INPUT, INPUT_MOUSE, LLMHF_INJECTED, MOUSEEVENTF_LEFTUP,
             MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_XUP, MOUSEINPUT, MSG,
-            MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_QUIT, XBUTTON1, XBUTTON2,
+            MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN,
+            WM_XBUTTONDOWN, XBUTTON1, XBUTTON2,
         },
     },
 };
@@ -39,9 +40,31 @@ use crate::common::input::{
     MOUSE_BUTTON_WHEEL, MOUSE_TYPE_DOWN, MOUSE_TYPE_UP,
 };
 
-/// Option key gating this whole feature. `enable-` prefix means `option2bool` defaults
-/// it to on (matches AnyDesk-parity being the expected default); set to "N" to opt out.
-pub(crate) const LOCAL_INPUT_PRIORITY_OPTION: &str = "enable-local-input-priority";
+/// Gates this whole feature. The `enable-` prefix means `option2bool` defaults it to on
+/// (AnyDesk parity being the expected default); set it to "N" to opt out.
+fn is_enabled() -> bool {
+    hbb_common::config::Config::get_bool_option(
+        base::config::keys::OPTION_ENABLE_LOCAL_INPUT_PRIORITY,
+    )
+}
+
+/// The observer stops when the returned value is dropped.
+pub(crate) fn start_observer_if_enabled() -> Option<LocalMouseObserver> {
+    if !is_enabled() {
+        return None;
+    }
+    match start_local_mouse_observer() {
+        Ok(observer) => Some(observer),
+        Err(err) => {
+            log::warn!("Local mouse priority is unavailable: {}", err);
+            None
+        }
+    }
+}
+
+pub(crate) fn suppress_remote_mouse() -> bool {
+    is_enabled() && arbitrate_remote_mouse() == RemoteMouseAction::Suppress
+}
 
 const LOCAL_MOUSE_PRIORITY_TIMEOUT_MS: u64 = 600;
 
@@ -177,7 +200,7 @@ extern "system" fn local_mouse_hook(code: c_int, w_param: WPARAM, l_param: LPARA
     if code == HC_ACTION {
         let event = unsafe { &*(l_param as *const MSLLHOOKSTRUCT) };
         if is_local_physical_mouse_event(event.flags, event.dwExtraInfo) {
-            note_local_mouse_activity();
+            note_local_mouse_activity(local_button_down(w_param as u32, event.mouseData));
         }
     }
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, w_param, l_param) }
@@ -205,15 +228,33 @@ fn local_mouse_has_priority_at(last_activity: u64, now: u64, timeout_ms: u64) ->
     last_activity != 0 && now.wrapping_sub(last_activity) < timeout_ms
 }
 
-fn note_local_mouse_activity() {
+/// The button a physical down event presses, as a MOUSE_BUTTON_* bit, or 0.
+fn local_button_down(message: u32, mouse_data: u32) -> u8 {
+    let button = match message {
+        WM_LBUTTONDOWN => MOUSE_BUTTON_LEFT,
+        WM_RBUTTONDOWN => MOUSE_BUTTON_RIGHT,
+        WM_MBUTTONDOWN => MOUSE_BUTTON_WHEEL,
+        WM_XBUTTONDOWN => match HIWORD(mouse_data) {
+            XBUTTON1 => MOUSE_BUTTON_BACK,
+            XBUTTON2 => MOUSE_BUTTON_FORWARD,
+            _ => 0,
+        },
+        _ => 0,
+    };
+    button as u8
+}
+
+fn note_local_mouse_activity(local_down: u8) {
     let buttons_to_release = note_local_mouse_activity_at(
         monotonic_millis(),
         &LAST_LOCAL_MOUSE_ACTIVITY,
         &REMOTE_BUTTONS_DOWN,
     );
+    // The injected UPs are processed after the physical event in hand, so they stop a
+    // remote drag from continuing under local movement. A button the user is pressing
+    // right now is theirs: releasing it would cancel their press.
+    let buttons_to_release = buttons_to_release & !local_down;
     if buttons_to_release != 0 {
-        // Release before the physical event leaves the hook so local movement cannot continue a
-        // drag that a remote peer started.
         release_remote_buttons(buttons_to_release);
     }
 }
@@ -280,6 +321,9 @@ fn local_mouse_has_priority() -> bool {
 }
 
 pub(crate) fn record_remote_mouse_injected(evt_type: i32, buttons: i32) {
+    if !is_enabled() {
+        return;
+    }
     let buttons_to_release = record_remote_mouse_injected_with(
         evt_type,
         buttons,
@@ -297,6 +341,18 @@ fn record_remote_mouse_injected_with<F: FnOnce() -> bool>(
     local_has_priority: F,
     remote_buttons_down: &AtomicU8,
 ) -> u8 {
+    // handle_mouse_simulation_ injects single-button masks only; recording a combined
+    // mask would make a local takeover release buttons that were never pressed.
+    if !matches!(
+        buttons,
+        MOUSE_BUTTON_LEFT
+            | MOUSE_BUTTON_RIGHT
+            | MOUSE_BUTTON_WHEEL
+            | MOUSE_BUTTON_BACK
+            | MOUSE_BUTTON_FORWARD
+    ) {
+        return 0;
+    }
     let buttons = buttons as u8;
     if evt_type == MOUSE_TYPE_DOWN {
         remote_buttons_down.fetch_or(buttons, Ordering::AcqRel);
@@ -383,6 +439,30 @@ mod tests {
             record_remote_mouse_injected_with(MOUSE_TYPE_UP, MOUSE_BUTTON_LEFT, || true, &buttons),
             0
         );
+    }
+
+    #[test]
+    fn local_press_of_a_remote_held_button_is_not_released() {
+        assert_eq!(
+            local_button_down(WM_LBUTTONDOWN, 0),
+            MOUSE_BUTTON_LEFT as u8
+        );
+        assert_eq!(
+            local_button_down(WM_XBUTTONDOWN, (XBUTTON2 as u32) << 16),
+            MOUSE_BUTTON_FORWARD as u8
+        );
+        assert_eq!(local_button_down(WM_QUIT, 0), 0);
+    }
+
+    #[test]
+    fn combined_button_masks_are_not_recorded() {
+        let buttons = AtomicU8::new(0);
+        let both = MOUSE_BUTTON_LEFT | MOUSE_BUTTON_RIGHT;
+        assert_eq!(
+            record_remote_mouse_injected_with(MOUSE_TYPE_DOWN, both, || false, &buttons),
+            0
+        );
+        assert_eq!(buttons.load(Ordering::Relaxed), 0);
     }
 
     #[test]

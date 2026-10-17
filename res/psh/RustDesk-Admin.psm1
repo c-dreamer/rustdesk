@@ -11,21 +11,86 @@ function Find-RustDeskExe {
     throw "rustdesk.exe not found. Pass -Exe <path> explicitly."
 }
 
+function Format-RustDeskArgument {
+    # Start-Process joins an argument array with spaces and no quoting, so quote
+    # each argument here using the rules CommandLineToArgvW (and Rust's std::env::args) parse.
+    param([AllowEmptyString()][string]$Argument)
+    if ($Argument -ne '' -and $Argument -notmatch '[\s"]') { return $Argument }
+    $escaped = $Argument -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1'
+    '"' + $escaped + '"'
+}
+
 function Invoke-RustDeskExe {
     # rustdesk.exe is a GUI-subsystem (WinMain) binary; PowerShell's `&` call
     # operator does not reliably capture its stdout. Start-Process with an
     # explicit redirect file does.
     param(
         [Parameter(Mandatory)][string]$Exe,
-        [Parameter(Mandatory)][string[]]$ArgumentList
+        [Parameter(Mandatory)][AllowEmptyString()][string[]]$ArgumentList,
+        # Wait for rustdesk.exe only, not processes it (or a script it runs) leaves behind;
+        # Start-Process -Wait waits for the whole process tree.
+        [switch]$ExeOnly
     )
     $outFile = [System.IO.Path]::GetTempFileName()
     try {
-        Start-Process -FilePath $Exe -ArgumentList $ArgumentList -NoNewWindow -Wait -RedirectStandardOutput $outFile
+        $argString = ($ArgumentList | ForEach-Object { Format-RustDeskArgument $_ }) -join ' '
+        if ($ExeOnly) {
+            $process = Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -PassThru -RedirectStandardOutput $outFile
+            $process.WaitForExit()
+        } else {
+            Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -Wait -RedirectStandardOutput $outFile
+        }
         Get-Content -Raw -Encoding UTF8 -Path $outFile
     } finally {
         Remove-Item -Path $outFile -ErrorAction SilentlyContinue
     }
+}
+
+function Wait-RustDeskExe {
+    # For commands that start long-lived processes (the tray, the main window):
+    # Start-Process -Wait would wait for those too, i.e. forever, and a redirected
+    # stdout file would be held open by them. Wait for this process only.
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [Parameter(Mandatory)][string[]]$ArgumentList
+    )
+    $argString = ($ArgumentList | ForEach-Object { Format-RustDeskArgument $_ }) -join ' '
+    $process = Start-Process -FilePath $Exe -ArgumentList $argString -NoNewWindow -PassThru
+    $process.WaitForExit()
+}
+
+function ConvertFrom-RustDeskJson {
+    # A failure is plain text or {"error": ...}; surface it instead of a JSON parse error.
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        Write-Error 'rustdesk.exe printed nothing'
+        return
+    }
+    try {
+        $parsed = $Text | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Error "$Text".Trim()
+        return
+    }
+    if ($parsed -is [System.Management.Automation.PSCustomObject] -and
+        @($parsed.PSObject.Properties).Count -eq 1 -and $null -ne $parsed.error) {
+        Write-Error $parsed.error
+        return
+    }
+    # Returned through a variable, so Windows PowerShell 5.1 sends an array's items
+    # down the pipeline one by one, as PowerShell 7 does.
+    $parsed
+}
+
+function Confirm-RustDeskOutput {
+    # rustdesk.exe exits 0 either way and reports problems as text (e.g. "Installation
+    # and administrative privileges required!"), so compare with what success prints.
+    param(
+        [AllowNull()][AllowEmptyString()][string]$Output,
+        [AllowEmptyString()][string]$Success
+    )
+    $text = "$Output".Trim()
+    if ($text -ne $Success) { Write-Error $text }
 }
 
 function Get-RustDeskId {
@@ -39,7 +104,7 @@ function Get-RustDeskStatus {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--status" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--status")
 }
 
 function Get-RustDeskOptions {
@@ -54,18 +119,19 @@ function Get-RustDeskPeers {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-peers" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-peers")
 }
 
 function Set-RustDeskOption {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][string]$Value,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Value,
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --option $Name $Value
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', $Name, $Value
+    Confirm-RustDeskOutput -Output $out -Success ''
 }
 
 function Set-RustDeskPassword {
@@ -75,7 +141,8 @@ function Set-RustDeskPassword {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --password $Password
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList '--password', $Password
+    Confirm-RustDeskOutput -Output $out -Success 'Done!'
 }
 
 function Set-RustDeskId {
@@ -85,7 +152,8 @@ function Set-RustDeskId {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --set-id $Id
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList '--set-id', $Id
+    Confirm-RustDeskOutput -Output $out -Success 'Done!'
 }
 
 function Import-RustDeskConfig {
@@ -95,28 +163,28 @@ function Import-RustDeskConfig {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --import-config $Path
+    Invoke-RustDeskExe -Exe $exe -ArgumentList '--import-config', $Path
 }
 
 function Install-RustDeskService {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --install-service
+    Wait-RustDeskExe -Exe $exe -ArgumentList '--install-service'
 }
 
 function Uninstall-RustDeskService {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --uninstall-service
+    Wait-RustDeskExe -Exe $exe -ArgumentList '--uninstall-service'
 }
 
 function Update-RustDeskApp {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --update
+    Wait-RustDeskExe -Exe $exe -ArgumentList '--update'
 }
 
 function Uninstall-RustDeskApp {
@@ -124,7 +192,7 @@ function Uninstall-RustDeskApp {
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
     if ($PSCmdlet.ShouldProcess($exe, "Uninstall RustDesk")) {
-        & $exe --uninstall
+        Wait-RustDeskExe -Exe $exe -ArgumentList '--uninstall'
     }
 }
 
@@ -132,33 +200,34 @@ function Get-RustDeskInventory {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--inventory" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--inventory")
 }
 
 function Get-RustDeskAlerts {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--alerts-status" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--alerts-status")
 }
 
 function Set-RustDeskThreshold {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][ValidateSet('Cpu', 'Memory', 'Disk')][string]$Metric,
-        [Parameter(Mandatory)][int]$Percent,
+        [Parameter(Mandatory)][ValidateRange(1, 100)][int]$Percent,
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
     $key = @{ Cpu = 'rmm-cpu-threshold'; Memory = 'rmm-mem-threshold'; Disk = 'rmm-disk-threshold' }[$Metric]
-    & $exe --option $key $Percent
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', $key, "$Percent"
+    Confirm-RustDeskOutput -Output $out -Success ''
 }
 
 function Get-RustDeskScripts {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-scripts" | ConvertFrom-Json
+    ConvertFrom-RustDeskJson (Invoke-RustDeskExe -Exe $exe -ArgumentList "--list-scripts")
 }
 
 function Add-RustDeskScript {
@@ -172,7 +241,8 @@ function Add-RustDeskScript {
     $exe = Find-RustDeskExe -Path $Exe
     $cliArgs = @("--add-script", $Name, $Path)
     if ($PSBoundParameters.ContainsKey('ScheduleSeconds')) { $cliArgs += "$ScheduleSeconds" }
-    Invoke-RustDeskExe -Exe $exe -ArgumentList $cliArgs
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList $cliArgs
+    Confirm-RustDeskOutput -Output $out -Success 'Done!'
 }
 
 function Invoke-RustDeskScript {
@@ -182,21 +252,30 @@ function Invoke-RustDeskScript {
         [string]$Exe
     )
     $exe = Find-RustDeskExe -Path $Exe
-    Invoke-RustDeskExe -Exe $exe -ArgumentList "--run-script", $Name
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList "--run-script", $Name -ExeOnly
+    if ("$out".StartsWith('Error: ')) {
+        Write-Error "$out".Substring(7).Trim()
+    } elseif ("$out".Trim() -eq 'Settings are disabled!') {
+        Write-Error "$out".Trim()
+    } else {
+        $out
+    }
 }
 
 function Enable-RustDeskMonitor {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --option rmm-monitor-enabled true
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', 'rmm-monitor-enabled', 'Y'
+    Confirm-RustDeskOutput -Output $out -Success ''
 }
 
 function Disable-RustDeskMonitor {
     [CmdletBinding()]
     param([string]$Exe)
     $exe = Find-RustDeskExe -Path $Exe
-    & $exe --option rmm-monitor-enabled false
+    $out = Invoke-RustDeskExe -Exe $exe -ArgumentList '--option', 'rmm-monitor-enabled', 'N'
+    Confirm-RustDeskOutput -Output $out -Success ''
 }
 
 Export-ModuleMember -Function Get-RustDeskId, Get-RustDeskStatus, Get-RustDeskOptions, Get-RustDeskPeers, Set-RustDeskOption, Set-RustDeskPassword, Set-RustDeskId, Import-RustDeskConfig, Install-RustDeskService, Uninstall-RustDeskService, Update-RustDeskApp, Uninstall-RustDeskApp, Get-RustDeskInventory, Get-RustDeskAlerts, Set-RustDeskThreshold, Get-RustDeskScripts, Add-RustDeskScript, Invoke-RustDeskScript, Enable-RustDeskMonitor, Disable-RustDeskMonitor

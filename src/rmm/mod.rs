@@ -3,6 +3,7 @@
 //! `is_enabled`. No server, no new protocol; reads/writes go through the
 //! existing option store and plain JSON files next to the existing config dir.
 
+pub mod cli;
 pub mod inventory;
 pub mod mcp;
 pub mod monitor;

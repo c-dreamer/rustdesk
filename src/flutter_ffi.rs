@@ -1063,36 +1063,72 @@ pub fn main_set_options(json: String) {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+// flutter_rust_bridge 1.80 ignores a cfg on the function itself, so the cfg lives in the body.
 pub fn main_rmm_inventory() -> String {
-    crate::rmm::inventory::snapshot().to_string()
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn main_rmm_recent_alerts() -> String {
-    serde_json::json!(crate::rmm::monitor::recent_alerts()).to_string()
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn main_rmm_list_scripts() -> String {
-    crate::rmm::scripts::list()
-        .unwrap_or_else(|_| serde_json::json!([]))
-        .to_string()
-}
-
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-pub fn main_rmm_add_script(name: String, body: String) -> String {
-    match crate::rmm::scripts::add(&name, &body, None) {
-        Ok(()) => "".to_owned(),
-        Err(err) => err.to_string(),
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        crate::rmm::inventory::snapshot().to_string()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        "{}".to_owned()
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
+pub fn main_rmm_recent_alerts() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        serde_json::json!(crate::rmm::monitor::recent_alerts()).to_string()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        "[]".to_owned()
+    }
+}
+
+pub fn main_rmm_list_scripts() -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        crate::rmm::scripts::list()
+            .unwrap_or_else(|err| {
+                log::warn!("rmm: failed to list scripts: {err}");
+                serde_json::json!({ "error": err.to_string() })
+            })
+            .to_string()
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        "[]".to_owned()
+    }
+}
+
+pub fn main_rmm_add_script(name: String, body: String) -> String {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        match crate::rmm::scripts::update_body(&name, &body) {
+            Ok(()) => "".to_owned(),
+            Err(err) => err.to_string(),
+        }
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = (name, body);
+        "Not supported on this platform".to_owned()
+    }
+}
+
 pub fn main_rmm_run_script(name: String) -> String {
-    match crate::rmm::scripts::run(&name) {
-        Ok(output) => output,
-        Err(err) => format!("Error: {err}"),
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        match crate::rmm::scripts::run(&name) {
+            Ok(output) => output,
+            Err(err) => format!("Error: {err}"),
+        }
+    }
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        let _ = name;
+        "Error: Not supported on this platform".to_owned()
     }
 }
 

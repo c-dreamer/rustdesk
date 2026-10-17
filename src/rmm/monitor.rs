@@ -1,22 +1,16 @@
 //! Background CPU/memory/disk threshold + service-down monitoring, gated by the
-//! `rmm-monitor-enabled` option (off by default). Runs in-process in the
-//! server/service process alongside the rest of RustDesk's background loops
-//! (see `crate::rustdesk_interval` callers elsewhere in this crate).
+//! `rmm-monitor-enabled` option (off by default). Runs on its own thread in the
+//! server/service process.
 
+use base::config::keys;
 #[cfg(windows)]
-use hbb_common::config;
-use hbb_common::{config::Config, log, sysinfo::System, tokio};
+use hbb_common::{config, tokio};
+use hbb_common::{config::Config, log, sysinfo::System};
 #[cfg(windows)]
 use tauri_winrt_notification::{Duration as ToastDuration, Sound, Toast};
 
-const MONITOR_ENABLED_OPTION: &str = "rmm-monitor-enabled";
-const CPU_THRESHOLD_OPTION: &str = "rmm-cpu-threshold";
-const MEM_THRESHOLD_OPTION: &str = "rmm-mem-threshold";
-const DISK_THRESHOLD_OPTION: &str = "rmm-disk-threshold";
-const WATCH_SERVICES_OPTION: &str = "rmm-watch-services";
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const ALERTS_LOG_FILE: &str = "rmm_alerts.log";
-const RECENT_ALERTS_OPTION: &str = "rmm-recent-alerts";
 const RECENT_ALERTS_KEPT: usize = 20;
 
 fn option_threshold(key: &str) -> Option<f32> {
@@ -61,15 +55,39 @@ fn check_thresholds(
     alerts
 }
 
+/// A breach that persists across polls is reported once, when it starts; it is
+/// reported again only after it clears. Keyed on the alert text minus its
+/// percentages, which change from poll to poll.
+fn newly_breached(
+    active: &mut std::collections::HashSet<String>,
+    alerts: Vec<String>,
+) -> Vec<String> {
+    let key = |a: &str| {
+        a.split_whitespace()
+            .filter(|w| !w.ends_with('%'))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let current: std::collections::HashSet<String> = alerts.iter().map(|a| key(a)).collect();
+    let fresh = alerts
+        .into_iter()
+        .filter(|a| !active.contains(&key(a)))
+        .collect();
+    *active = current;
+    fresh
+}
+
 #[cfg(windows)]
 fn down_services() -> Vec<String> {
-    Config::get_option(WATCH_SERVICES_OPTION)
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+    watch_list(&Config::get_option(keys::OPTION_RMM_WATCH_SERVICES))
         .filter(|s| !crate::platform::is_service_running(s))
         .map(str::to_owned)
         .collect()
+}
+
+#[cfg(any(windows, test))]
+fn watch_list(raw: &str) -> impl Iterator<Item = &str> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty())
 }
 
 #[cfg(not(windows))]
@@ -102,7 +120,7 @@ fn alerts_log_path() -> std::path::PathBuf {
 /// the latest alerts are also mirrored into an option, which every client reads over IPC.
 pub fn recent_alerts() -> Vec<String> {
     crate::ipc::get_options()
-        .get(RECENT_ALERTS_OPTION)
+        .get(keys::OPTION_RMM_RECENT_ALERTS)
         .and_then(|v| serde_json::from_str(v).ok())
         .unwrap_or_default()
 }
@@ -116,9 +134,13 @@ fn merge_recent(existing: &str, now: i64, alerts: &[String]) -> Vec<String> {
 }
 
 fn remember_alerts(now: i64, alerts: &[String]) {
-    let recent = merge_recent(&Config::get_option(RECENT_ALERTS_OPTION), now, alerts);
+    let recent = merge_recent(
+        &Config::get_option(keys::OPTION_RMM_RECENT_ALERTS),
+        now,
+        alerts,
+    );
     if let Ok(json) = serde_json::to_string(&recent) {
-        Config::set_option(RECENT_ALERTS_OPTION.to_owned(), json);
+        Config::set_option(keys::OPTION_RMM_RECENT_ALERTS.to_owned(), json);
     }
 }
 
@@ -167,12 +189,112 @@ fn notify(alerts: &[String]) {
 #[cfg(not(windows))]
 fn notify(_alerts: &[String]) {}
 
-pub async fn run() {
-    let mut system = System::new();
-    let mut timer = crate::rustdesk_interval(tokio::time::interval(POLL_INTERVAL));
+/// Entries of `recent` raised at or after `since` (ms) that are not in `shown`; `shown`
+/// is updated and pruned to the current list (at most RECENT_ALERTS_KEPT entries).
+/// Remembering entries, not a timestamp, means neither a whole-map options write that
+/// drops one nor a clock stepped back can make old alerts look new.
+#[cfg(any(windows, test))]
+fn new_alerts(
+    recent: &str,
+    since: i64,
+    shown: &mut std::collections::HashSet<String>,
+) -> Vec<String> {
+    let stamp = |a: &str| a.split_once(' ').and_then(|(t, _)| t.parse::<i64>().ok());
+    let list: Vec<String> = serde_json::from_str(recent).unwrap_or_default();
+    let fresh: Vec<String> = list
+        .iter()
+        .filter(|a| stamp(a).map_or(false, |t| t >= since) && !shown.contains(*a))
+        .cloned()
+        .collect();
+    shown.retain(|a| list.contains(a));
+    shown.extend(fresh.iter().cloned());
+    fresh
+}
+
+/// With hide-tray set, the `--tray` process would exit without an icon, and nothing in
+/// the user's session would raise alerts. Keep it alive (still iconless) only while
+/// monitoring is on; enabling monitoring later takes effect at the next logon.
+#[cfg(windows)]
+pub fn tray_alert_watch_hidden() {
+    // The visible tray takes this lock in make_tray; check_process("--tray") alone
+    // misses duplicates (#15689), and a hidden duplicate would now live forever.
+    if !crate::platform::is_installed()
+        || !crate::platform::windows::try_lock_tray_single_instance()
+    {
+        return;
+    }
+    // At logon the service may not answer yet, and ipc::get_options would then fall
+    // back to this user's config, which never holds the option; wait for a real answer.
+    for _ in 0..24 {
+        match server_monitoring_enabled() {
+            Some(true) => return tray_alert_watch(),
+            Some(false) => return,
+            None => std::thread::sleep(std::time::Duration::from_secs(5)),
+        }
+    }
+    log::warn!("rmm: service IPC did not answer; no monitoring alerts in this session");
+}
+
+#[cfg(windows)]
+#[tokio::main(flavor = "current_thread")]
+async fn server_monitoring_enabled() -> Option<bool> {
+    let mut conn = crate::ipc::connect(1000, "").await.ok()?;
+    conn.send(&crate::ipc::Data::Options(None)).await.ok()?;
+    match conn.next_timeout(1000).await {
+        Ok(Some(crate::ipc::Data::Options(Some(options)))) => Some(
+            options
+                .get(keys::OPTION_RMM_MONITOR_ENABLED)
+                .map_or(false, |v| v == "Y"),
+        ),
+        _ => None,
+    }
+}
+
+/// Installed endpoints run `run` in the SYSTEM service, whose toasts never reach the
+/// user's desktop, so the per-session tray process re-raises new alerts instead.
+#[cfg(windows)]
+#[tokio::main(flavor = "current_thread")]
+pub async fn tray_alert_watch() {
+    // Filtered by timestamp, not seeded from the current list, because at logon the
+    // service may not answer IPC yet and the fallback options carry no alerts.
+    let mut since = hbb_common::get_time();
+    let mut shown = std::collections::HashSet::new();
+    let mut timer = tokio::time::interval(POLL_INTERVAL);
     loop {
         timer.tick().await;
-        if !crate::rmm::is_enabled(MONITOR_ENABLED_OPTION) {
+        // A clock stepped back below the tray's start would hide new alerts; `shown`
+        // keeps already-toasted ones from coming back.
+        since = since.min(hbb_common::get_time());
+        let options = crate::ipc::get_options_async().await;
+        if options
+            .get(keys::OPTION_RMM_MONITOR_ENABLED)
+            .map(String::as_str)
+            != Some("Y")
+        {
+            continue;
+        }
+        let alerts = new_alerts(
+            options
+                .get(keys::OPTION_RMM_RECENT_ALERTS)
+                .map_or("", String::as_str),
+            since,
+            &mut shown,
+        );
+        if !alerts.is_empty() {
+            notify(&alerts);
+        }
+    }
+}
+
+/// Runs on its own thread: disk and service queries, config writes and toasts all
+/// block, and must not stall the async runtime.
+pub fn run() {
+    let mut system = System::new();
+    let mut active = std::collections::HashSet::new();
+    loop {
+        std::thread::sleep(POLL_INTERVAL);
+        if !crate::rmm::is_enabled(keys::OPTION_RMM_MONITOR_ENABLED) {
+            active.clear();
             continue;
         }
         system.refresh_cpu_usage();
@@ -188,13 +310,18 @@ pub async fn run() {
             cpu_pct,
             mem_pct,
             disk.as_ref().map(|(m, p)| (m.as_str(), *p)),
-            option_threshold(CPU_THRESHOLD_OPTION),
-            option_threshold(MEM_THRESHOLD_OPTION),
-            option_threshold(DISK_THRESHOLD_OPTION),
+            option_threshold(keys::OPTION_RMM_CPU_THRESHOLD),
+            option_threshold(keys::OPTION_RMM_MEM_THRESHOLD),
+            option_threshold(keys::OPTION_RMM_DISK_THRESHOLD),
             &down_services(),
         );
+        let alerts = newly_breached(&mut active, alerts);
         if !alerts.is_empty() {
             log_alerts(&alerts);
+            #[cfg(windows)]
+            if crate::platform::is_installed() {
+                continue;
+            }
             notify(&alerts);
         }
     }
@@ -247,6 +374,53 @@ mod tests {
         assert_eq!(merged.len(), RECENT_ALERTS_KEPT);
         assert_eq!(merged[0], "2 29");
         assert!(merge_recent("not json", 3, &[]).is_empty());
+    }
+
+    #[test]
+    fn sustained_breach_reported_once_until_cleared() {
+        let mut active = std::collections::HashSet::new();
+        let cpu = |p: u32| format!("CPU usage {p}% exceeds threshold 80%");
+        let svc = |n: &str| format!("Service '{n}' is not running");
+        assert_eq!(newly_breached(&mut active, vec![cpu(90)]), vec![cpu(90)]);
+        assert!(newly_breached(&mut active, vec![cpu(95)]).is_empty());
+        assert_eq!(
+            newly_breached(&mut active, vec![cpu(96), svc("svc1")]),
+            vec![svc("svc1")]
+        );
+        assert_eq!(
+            newly_breached(&mut active, vec![cpu(97), svc("svc1"), svc("svc2")]),
+            vec![svc("svc2")]
+        );
+        assert!(newly_breached(&mut active, vec![]).is_empty());
+        assert_eq!(newly_breached(&mut active, vec![cpu(85)]), vec![cpu(85)]);
+    }
+
+    #[test]
+    fn watch_list_trims_and_skips_empty_entries() {
+        let names: Vec<_> = watch_list(" Spooler, ,W32Time ,,").collect();
+        assert_eq!(names, ["Spooler", "W32Time"]);
+        assert_eq!(watch_list("").count(), 0);
+    }
+
+    #[test]
+    fn new_alerts_skips_old_and_already_shown() {
+        let mut shown = std::collections::HashSet::new();
+        let recent = r#"["300 c","300 d","200 b","100 a"]"#;
+        assert_eq!(
+            new_alerts(recent, 150, &mut shown),
+            vec!["300 c", "300 d", "200 b"]
+        );
+        assert!(new_alerts(recent, 150, &mut shown).is_empty());
+        // A dropped entry, or a clock stepped back (lower `since`), shows nothing again.
+        assert!(new_alerts(r#"["300 d","200 b"]"#, 150, &mut shown).is_empty());
+        assert!(new_alerts(r#"["300 d","200 b"]"#, 0, &mut shown).is_empty());
+        // Only a genuinely new entry is shown, and `shown` stays bounded by the list.
+        assert_eq!(
+            new_alerts(r#"["400 e","300 d"]"#, 0, &mut shown),
+            vec!["400 e"]
+        );
+        assert_eq!(shown.len(), 2);
+        assert!(new_alerts("", 0, &mut shown).is_empty());
     }
 
     #[test]

@@ -3,13 +3,14 @@
 //! tooling headlessly. No listening port. Read tools are always available; tools that
 //! change state require the `rmm-agent-write` option, which the agent cannot set itself.
 
-use hbb_common::config;
+use base::config::keys;
+use hbb_common::tokio;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
-const AGENT_WRITE_OPTION: &str = "rmm-agent-write";
-const RECENT_ALERTS_OPTION: &str = "rmm-recent-alerts";
 const PROTOCOL_VERSION: &str = "2025-06-18";
+// 2025-03-26 is left out: it allows JSON-RPC batches, which this server does not handle.
+const SUPPORTED_VERSIONS: &[&str] = &[PROTOCOL_VERSION, "2024-11-05"];
 
 pub fn serve(cli_settings_disabled: bool) {
     let stdin = std::io::stdin();
@@ -35,10 +36,19 @@ pub fn serve(cli_settings_disabled: bool) {
 }
 
 fn write_allowed(cli_settings_disabled: bool) -> bool {
-    !cli_settings_disabled
-        && crate::ipc::get_options()
-            .get(AGENT_WRITE_OPTION)
-            .map_or(false, |v| v == "Y")
+    !cli_settings_disabled && server_option(keys::OPTION_RMM_AGENT_WRITE).as_deref() == Some("Y")
+}
+
+/// Fails closed: `ipc::get_options` falls back to the caller's own (user-writable)
+/// config when the server is unreachable, which must not open the write gate.
+#[tokio::main(flavor = "current_thread")]
+async fn server_option(key: &str) -> Option<String> {
+    let mut conn = crate::ipc::connect(1000, "").await.ok()?;
+    conn.send(&crate::ipc::Data::Options(None)).await.ok()?;
+    match conn.next_timeout(1000).await {
+        Ok(Some(crate::ipc::Data::Options(Some(options)))) => options.get(key).cloned(),
+        _ => None,
+    }
 }
 
 fn handle(req: &Value, write_allowed: &dyn Fn() -> bool) -> Option<Value> {
@@ -51,6 +61,7 @@ fn handle(req: &Value, write_allowed: &dyn Fn() -> bool) -> Option<Value> {
                 let version = params
                     .get("protocolVersion")
                     .and_then(Value::as_str)
+                    .filter(|v| SUPPORTED_VERSIONS.contains(v))
                     .unwrap_or(PROTOCOL_VERSION);
                 result(
                     id,
@@ -65,6 +76,9 @@ fn handle(req: &Value, write_allowed: &dyn Fn() -> bool) -> Option<Value> {
             "tools/list" => result(id, json!({"tools": tool_list()})),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+                if !tool_list().iter().any(|t| t["name"] == name) {
+                    return Some(error(id, -32602, &format!("Unknown tool: {name}")));
+                }
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let (text, is_error) = match call_tool(name, &args, write_allowed) {
                     Ok(text) => (text, false),
@@ -102,7 +116,7 @@ fn tool_list() -> Vec<Value> {
         tool("get_status", "RustDesk ID and version of this machine.", none.clone(), &[]),
         tool(
             "get_inventory",
-            "Hardware, OS and installed software on this machine.",
+            "Hardware and OS of this machine, plus installed software (Windows only; empty elsewhere).",
             none.clone(),
             &[],
         ),
@@ -122,7 +136,7 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "set_option",
-            "Set an rmm-* option, e.g. rmm-monitor-enabled=Y or rmm-cpu-threshold=90. Requires the rmm-agent-write option.",
+            "Set a monitoring option: rmm-monitor-enabled (Y/N), rmm-cpu-threshold, rmm-mem-threshold, rmm-disk-threshold (1-100, empty to clear) or rmm-watch-services (Windows only; comma-separated names of installed services). Requires the rmm-agent-write option.",
             json!({"name": {"type": "string"}, "value": {"type": "string"}}),
             &["name", "value"],
         ),
@@ -140,44 +154,94 @@ fn require_write(write_allowed: &dyn Fn() -> bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "Write tools are disabled. A human must run: rustdesk --option {AGENT_WRITE_OPTION} Y"
+            "Write tools are disabled. A human must turn on Settings > Tools > AI agents, or run: rustdesk --option {} Y",
+            keys::OPTION_RMM_AGENT_WRITE
         ))
     }
 }
 
+/// Changes one key on the server, or fails. `ipc::set_option` is unsuitable here: when
+/// the read times out it pushes this process's whole local option map to the service,
+/// and any whole-map write could undo a concurrent change, such as a human switching
+/// the agent gate off. `SetRmmOption` changes only this key, under the server's lock.
+#[tokio::main(flavor = "current_thread")]
+async fn set_server_option(key: &str, value: &str) -> Result<(), String> {
+    use crate::ipc::Data;
+    let unreachable =
+        |err: hbb_common::anyhow::Error| format!("RustDesk service unreachable: {err}");
+    let mut conn = crate::ipc::connect(1000, "").await.map_err(unreachable)?;
+    conn.send(&Data::SetRmmOption((key.to_owned(), value.to_owned())))
+        .await
+        .map_err(unreachable)?;
+    match conn.next_timeout(1000).await {
+        Ok(Some(Data::SetRmmOption((k, stored)))) if k == key && stored == value => Ok(()),
+        _ => Err("RustDesk service did not confirm the change".to_owned()),
+    }
+}
+
+/// Agents may tune monitoring only. Script execution (rmm-scripts-enabled runs the
+/// library as SYSTEM) and the agent's own gate stay with a human.
+fn check_settable(key: &str, value: &str) -> Result<(), String> {
+    let ok = match key {
+        keys::OPTION_RMM_MONITOR_ENABLED => value == "Y" || value == "N",
+        keys::OPTION_RMM_CPU_THRESHOLD
+        | keys::OPTION_RMM_MEM_THRESHOLD
+        | keys::OPTION_RMM_DISK_THRESHOLD => {
+            value.is_empty()
+                || value
+                    .parse::<f32>()
+                    .map_or(false, |v| (1.0..=100.0).contains(&v))
+        }
+        // Each name ends up in a RustDesk-branded toast, so an agent gets service-name
+        // characters only, not free text.
+        keys::OPTION_RMM_WATCH_SERVICES => {
+            if !cfg!(windows) {
+                return Err(format!("{key} is only monitored on Windows"));
+            }
+            value.len() <= 1024
+                && value.split(',').map(str::trim).all(|name| {
+                    name.is_empty()
+                        || (name.len() <= 256
+                            && name
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || "_.$-".contains(c))
+                            && service_exists(name))
+                })
+        }
+        _ => return Err(format!("Option '{key}' cannot be set by an agent")),
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(format!("Invalid value for {key}: '{value}'"))
+    }
+}
+
+/// Characters alone still allow a sentence (`Call_us_now`); requiring an installed
+/// service keeps agent-chosen text out of the toast.
+#[cfg(windows)]
+fn service_exists(name: &str) -> bool {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(format!("SYSTEM\\CurrentControlSet\\Services\\{name}"))
+        .is_ok()
+}
+
+// Unreachable: check_settable refuses the watch list off Windows, where it is never read.
+#[cfg(not(windows))]
+fn service_exists(_name: &str) -> bool {
+    false
+}
+
 fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Result<String, String> {
     match name {
-        "get_status" => {
-            Ok(json!({"id": crate::ipc::get_id(), "version": crate::VERSION}).to_string())
-        }
+        "get_status" => Ok(crate::rmm::cli::status().to_string()),
         "get_inventory" => Ok(crate::rmm::inventory::snapshot().to_string()),
-        "get_alerts" => {
-            let options = crate::ipc::get_options();
-            let config: serde_json::Map<String, Value> = options
-                .iter()
-                .filter(|(k, _)| k.starts_with("rmm-") && k.as_str() != RECENT_ALERTS_OPTION)
-                .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
-                .collect();
-            let recent_alerts = crate::rmm::monitor::recent_alerts();
-            Ok(json!({"config": config, "recent_alerts": recent_alerts}).to_string())
-        }
+        "get_alerts" => Ok(crate::rmm::cli::alerts_status().to_string()),
         "list_scripts" => crate::rmm::scripts::list()
             .map(|v| v.to_string())
             .map_err(|err| err.to_string()),
-        "list_peers" => {
-            let peers: Vec<Value> = config::PeerConfig::peers(None)
-                .into_iter()
-                .map(|(id, _, p)| {
-                    json!({
-                        "id": id,
-                        "username": p.info.username,
-                        "hostname": p.info.hostname,
-                        "platform": p.info.platform,
-                    })
-                })
-                .collect();
-            Ok(Value::from(peers).to_string())
-        }
+        "list_peers" => Ok(crate::rmm::cli::peers().to_string()),
         "run_script" => {
             require_write(write_allowed)?;
             crate::rmm::scripts::run(str_arg(args, "name")?).map_err(|err| err.to_string())
@@ -185,13 +249,9 @@ fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Resu
         "set_option" => {
             require_write(write_allowed)?;
             let key = str_arg(args, "name")?;
-            if !key.starts_with("rmm-") || key == AGENT_WRITE_OPTION || key == RECENT_ALERTS_OPTION
-            {
-                return Err(format!(
-                    "Only rmm-* options other than {AGENT_WRITE_OPTION} and {RECENT_ALERTS_OPTION} can be set"
-                ));
-            }
-            crate::ipc::set_option(key, str_arg(args, "value")?);
+            let value = str_arg(args, "value")?;
+            check_settable(key, value)?;
+            set_server_option(key, value)?;
             Ok("Done!".to_owned())
         }
         _ => Err(format!("Unknown tool: {name}")),
@@ -233,10 +293,72 @@ mod tests {
 
     #[test]
     fn agent_cannot_open_its_own_gate_or_touch_other_options() {
-        for key in [AGENT_WRITE_OPTION, "custom-rendezvous-server"] {
+        for key in [keys::OPTION_RMM_AGENT_WRITE, "custom-rendezvous-server"] {
             let res = call("set_option", json!({"name": key, "value": "Y"}), true);
             assert_eq!(res["isError"], true, "{key}");
         }
+    }
+
+    #[test]
+    fn negotiates_only_supported_versions() {
+        let init = |v: &str| {
+            let req = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": v}});
+            handle(&req, &|| false).unwrap()["result"]["protocolVersion"].clone()
+        };
+        assert_eq!(init("2024-11-05"), "2024-11-05");
+        assert_eq!(init("2099-01-01"), PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn set_option_allows_only_monitoring_keys_and_valid_values() {
+        for (key, value) in [
+            ("rmm-monitor-enabled", "Y"),
+            ("rmm-monitor-enabled", "N"),
+            ("rmm-cpu-threshold", "90"),
+            ("rmm-disk-threshold", ""),
+        ] {
+            assert!(check_settable(key, value).is_ok(), "{key}={value}");
+        }
+        for (key, value) in [
+            ("rmm-scripts-enabled", "Y"),
+            ("rmm-agent-write", "Y"),
+            ("rmm-recent-alerts", "[]"),
+            ("custom-rendezvous-server", "x"),
+            ("rmm-monitor-enabled", "true"),
+            ("rmm-cpu-threshold", "0"),
+            ("rmm-cpu-threshold", "101"),
+            ("rmm-mem-threshold", "abc"),
+            ("rmm-watch-services", "a\nb"),
+            ("rmm-watch-services", "Spooler, Call 555-0100 now"),
+            ("rmm-watch-services", "a/b"),
+        ] {
+            assert!(check_settable(key, value).is_err(), "{key}={value}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn watch_list_accepts_installed_services_only() {
+        let key = keys::OPTION_RMM_WATCH_SERVICES;
+        assert!(check_settable(key, "Spooler, W32Time,").is_ok());
+        assert!(check_settable(key, "Your_PC_is_locked._Call_1-888-555-0199").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn watch_list_is_refused_off_windows() {
+        let err = check_settable(keys::OPTION_RMM_WATCH_SERVICES, "Spooler").unwrap_err();
+        assert!(err.contains("only monitored on Windows"), "{err}");
+    }
+
+    #[test]
+    fn unknown_tool_is_a_protocol_error() {
+        let req = json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "nope", "arguments": {}}});
+        let res = handle(&req, &|| true).unwrap();
+        assert_eq!(res["error"]["code"], -32602);
+        assert_eq!(res["id"], 3);
     }
 
     #[test]

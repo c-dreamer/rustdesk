@@ -180,6 +180,17 @@ pub const OPTION_KEEP_AWAKE_DURING_OUTGOING_SESSIONS: &str = "keep-awake-during-
 pub const OPTION_DISABLE_GROUP_PANEL: &str = "disable-group-panel";
 pub const OPTION_DISABLE_DISCOVERY_PANEL: &str = "disable-discovery-panel";
 pub const OPTION_PRE_ELEVATE_SERVICE: &str = "pre-elevate-service";
+// Local RMM tooling (src/rmm) and local input priority; all off by default except
+// the `enable-` one.
+pub const OPTION_RMM_MONITOR_ENABLED: &str = "rmm-monitor-enabled";
+pub const OPTION_RMM_CPU_THRESHOLD: &str = "rmm-cpu-threshold";
+pub const OPTION_RMM_MEM_THRESHOLD: &str = "rmm-mem-threshold";
+pub const OPTION_RMM_DISK_THRESHOLD: &str = "rmm-disk-threshold";
+pub const OPTION_RMM_WATCH_SERVICES: &str = "rmm-watch-services";
+pub const OPTION_RMM_RECENT_ALERTS: &str = "rmm-recent-alerts";
+pub const OPTION_RMM_SCRIPTS_ENABLED: &str = "rmm-scripts-enabled";
+pub const OPTION_RMM_AGENT_WRITE: &str = "rmm-agent-write";
+pub const OPTION_ENABLE_LOCAL_INPUT_PRIORITY: &str = "enable-local-input-priority";
 
 // DEFAULT_DISPLAY_SETTINGS, OVERWRITE_DISPLAY_SETTINGS
 pub const KEYS_DISPLAY_SETTINGS: &[&str] = &[

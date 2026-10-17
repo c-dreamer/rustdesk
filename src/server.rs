@@ -643,19 +643,8 @@ pub async fn start_server(is_server: bool, no_server: bool) {
 
     if is_server {
         #[cfg(windows)]
-        let _local_mouse_observer = if hbb_common::config::Config::get_bool_option(
-            crate::platform::windows::local_input::LOCAL_INPUT_PRIORITY_OPTION,
-        ) {
-            match crate::platform::windows::local_input::start_local_mouse_observer() {
-                Ok(observer) => Some(observer),
-                Err(err) => {
-                    log::warn!("Local mouse priority is unavailable: {}", err);
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        let _local_mouse_observer =
+            crate::platform::windows::local_input::start_observer_if_enabled();
         crate::common::set_server_running(true);
         std::thread::spawn(move || {
             if let Err(err) = crate::ipc::start("") {
@@ -697,7 +686,7 @@ pub async fn start_server(is_server: bool, no_server: bool) {
         crate::platform::try_kill_broker();
         #[cfg(feature = "hwcodec")]
         scrap::hwcodec::start_check_process();
-        tokio::spawn(crate::rmm::monitor::run());
+        std::thread::spawn(crate::rmm::monitor::run);
         tokio::spawn(crate::rmm::scripts::run_scheduler());
         crate::RendezvousMediator::start_all().await;
     } else {
