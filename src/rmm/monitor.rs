@@ -189,19 +189,19 @@ fn notify(alerts: &[String]) {
 #[cfg(not(windows))]
 fn notify(_alerts: &[String]) {}
 
-/// Entries of `recent` (newest first) raised at or after `since` and newer than `seen`.
+/// Entries of `recent` raised at or after `since` (ms), with the newest timestamp among
+/// them. Keyed on time, not on the last entry shown: a whole-map options write can drop
+/// that entry, and then every alert since startup would look new again.
 #[cfg(any(windows, test))]
-fn new_alerts(recent: &str, since: i64, seen: Option<&str>) -> Vec<String> {
-    serde_json::from_str::<Vec<String>>(recent)
+fn new_alerts(recent: &str, since: i64) -> (Vec<String>, Option<i64>) {
+    let stamp = |a: &str| a.split_once(' ').and_then(|(t, _)| t.parse::<i64>().ok());
+    let alerts: Vec<String> = serde_json::from_str::<Vec<String>>(recent)
         .unwrap_or_default()
         .into_iter()
-        .take_while(|a| Some(a.as_str()) != seen)
-        .filter(|a| {
-            a.split_once(' ')
-                .and_then(|(t, _)| t.parse::<i64>().ok())
-                .map_or(false, |t| t >= since)
-        })
-        .collect()
+        .filter(|a| stamp(a).map_or(false, |t| t >= since))
+        .collect();
+    let newest = alerts.iter().filter_map(|a| stamp(a)).max();
+    (alerts, newest)
 }
 
 /// With hide-tray set, the `--tray` process would exit without an icon, and nothing in
@@ -250,8 +250,7 @@ async fn server_monitoring_enabled() -> Option<bool> {
 pub async fn tray_alert_watch() {
     // Filtered by timestamp, not seeded from the current list, because at logon the
     // service may not answer IPC yet and the fallback options carry no alerts.
-    let started = hbb_common::get_time();
-    let mut seen: Option<String> = None;
+    let mut since = hbb_common::get_time();
     let mut timer = tokio::time::interval(POLL_INTERVAL);
     loop {
         timer.tick().await;
@@ -263,16 +262,15 @@ pub async fn tray_alert_watch() {
         {
             continue;
         }
-        let alerts = new_alerts(
+        let (alerts, newest) = new_alerts(
             options
                 .get(keys::OPTION_RMM_RECENT_ALERTS)
                 .map_or("", String::as_str),
-            started,
-            seen.as_deref(),
+            since,
         );
-        if let Some(newest) = alerts.first() {
+        if let Some(newest) = newest {
             notify(&alerts);
-            seen = Some(newest.clone());
+            since = newest + 1;
         }
     }
 }
@@ -394,12 +392,15 @@ mod tests {
     }
 
     #[test]
-    fn new_alerts_skips_old_and_seen() {
-        let recent = r#"["300 c","200 b","100 a"]"#;
-        assert_eq!(new_alerts(recent, 150, None), vec!["300 c", "200 b"]);
-        assert_eq!(new_alerts(recent, 150, Some("200 b")), vec!["300 c"]);
-        assert!(new_alerts(recent, 150, Some("300 c")).is_empty());
-        assert!(new_alerts("", 0, None).is_empty());
+    fn new_alerts_skips_old_and_already_shown() {
+        let recent = r#"["300 c","300 d","200 b","100 a"]"#;
+        let (alerts, newest) = new_alerts(recent, 150);
+        assert_eq!(alerts, vec!["300 c", "300 d", "200 b"]);
+        assert_eq!(newest, Some(300));
+        // Next poll starts after the newest shown; a dropped entry changes nothing.
+        let (alerts, newest) = new_alerts(r#"["300 d","200 b"]"#, 301);
+        assert!(alerts.is_empty() && newest.is_none());
+        assert_eq!(new_alerts("", 0), (vec![], None));
     }
 
     #[test]
