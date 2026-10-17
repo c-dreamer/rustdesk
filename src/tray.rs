@@ -11,6 +11,8 @@ use std::time::Duration;
 
 pub fn start_tray() {
     if crate::ui_interface::get_builtin_option(keys::OPTION_HIDE_TRAY) == "Y" {
+        #[cfg(windows)]
+        crate::rmm::monitor::tray_alert_watch_hidden();
         #[cfg(not(target_os = "macos"))]
         {
             return;

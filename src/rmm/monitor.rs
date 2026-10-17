@@ -206,6 +206,19 @@ fn new_alerts(recent: &str, since: i64, seen: Option<&str>) -> Vec<String> {
         .collect()
 }
 
+/// With hide-tray set, the `--tray` process would exit without an icon, and nothing in
+/// the user's session would raise alerts. Keep it alive (still iconless) only while
+/// monitoring is on; enabling monitoring later takes effect at the next logon.
+#[cfg(windows)]
+pub fn tray_alert_watch_hidden() {
+    let monitoring = crate::ipc::get_options()
+        .get(MONITOR_ENABLED_OPTION)
+        .map_or(false, |v| v == "Y");
+    if crate::platform::is_installed() && monitoring {
+        tray_alert_watch();
+    }
+}
+
 /// Installed endpoints run `run` in the SYSTEM service, whose toasts never reach the
 /// user's desktop, so the per-session tray process re-raises new alerts instead.
 #[cfg(windows)]
