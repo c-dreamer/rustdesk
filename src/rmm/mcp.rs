@@ -201,7 +201,18 @@ fn check_settable(key: &str, value: &str) -> Result<(), String> {
                     .parse::<f32>()
                     .map_or(false, |v| (1.0..=100.0).contains(&v))
         }
-        keys::OPTION_RMM_WATCH_SERVICES => value.len() <= 1024 && !value.contains(['\r', '\n']),
+        // Each name ends up in a RustDesk-branded toast, so an agent gets service-name
+        // characters only, not free text.
+        keys::OPTION_RMM_WATCH_SERVICES => {
+            value.len() <= 1024
+                && value.split(',').map(str::trim).all(|name| {
+                    name.is_empty()
+                        || (name.len() <= 256
+                            && name
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || "_.$-".contains(c)))
+                })
+        }
         _ => return Err(format!("Option '{key}' cannot be set by an agent")),
     };
     if ok {
@@ -322,6 +333,7 @@ mod tests {
             ("rmm-cpu-threshold", "90"),
             ("rmm-disk-threshold", ""),
             ("rmm-watch-services", "Spooler, W32Time"),
+            ("rmm-watch-services", "MSSQL$SQLEXPRESS,"),
         ] {
             assert!(check_settable(key, value).is_ok(), "{key}={value}");
         }
@@ -335,6 +347,8 @@ mod tests {
             ("rmm-cpu-threshold", "101"),
             ("rmm-mem-threshold", "abc"),
             ("rmm-watch-services", "a\nb"),
+            ("rmm-watch-services", "Spooler, Call 555-0100 now"),
+            ("rmm-watch-services", "a/b"),
         ] {
             assert!(check_settable(key, value).is_err(), "{key}={value}");
         }
