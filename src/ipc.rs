@@ -556,6 +556,10 @@ pub enum Data {
         hotx: i32,
         hoty: i32,
     },
+    /// Sets one `rmm-*` option on the server under its config lock, so a concurrent
+    /// whole-map write (e.g. the UI switching the agent gate off) is not undone by a
+    /// stale copy. Answered with the same key and the value now stored.
+    SetRmmOption((String, String)),
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -1011,6 +1015,13 @@ async fn handle(data: Data, stream: &mut Connection) {
                 allow_err!(stream.send(&Data::Options(None)).await);
             }
         },
+        Data::SetRmmOption((key, value)) => {
+            if key.starts_with("rmm-") {
+                Config::set_option(key.clone(), value);
+                let stored = Config::get_option(&key);
+                allow_err!(stream.send(&Data::SetRmmOption((key, stored))).await);
+            }
+        }
         Data::NatType(_) => {
             let t = Config::get_nat_type();
             allow_err!(stream.send(&Data::NatType(Some(t))).await);

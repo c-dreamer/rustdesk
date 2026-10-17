@@ -162,28 +162,19 @@ fn require_write(write_allowed: &dyn Fn() -> bool) -> Result<(), String> {
 
 /// Changes one key on the server, or fails. `ipc::set_option` is unsuitable here: when
 /// the read times out it pushes this process's whole local option map to the service,
-/// keys unchecked, and it reports nothing when the write does not arrive.
+/// and any whole-map write could undo a concurrent change, such as a human switching
+/// the agent gate off. `SetRmmOption` changes only this key, under the server's lock.
 #[tokio::main(flavor = "current_thread")]
 async fn set_server_option(key: &str, value: &str) -> Result<(), String> {
     use crate::ipc::Data;
     let unreachable =
         |err: hbb_common::anyhow::Error| format!("RustDesk service unreachable: {err}");
     let mut conn = crate::ipc::connect(1000, "").await.map_err(unreachable)?;
-    conn.send(&Data::Options(None)).await.map_err(unreachable)?;
-    let mut options = match conn.next_timeout(1000).await {
-        Ok(Some(Data::Options(Some(options)))) => options,
-        _ => return Err("RustDesk service did not return its options".to_owned()),
-    };
-    if value.is_empty() {
-        options.remove(key);
-    } else {
-        options.insert(key.to_owned(), value.to_owned());
-    }
-    conn.send(&Data::Options(Some(options)))
+    conn.send(&Data::SetRmmOption((key.to_owned(), value.to_owned())))
         .await
         .map_err(unreachable)?;
     match conn.next_timeout(1000).await {
-        Ok(Some(Data::Options(None))) => Ok(()),
+        Ok(Some(Data::SetRmmOption((k, stored)))) if k == key && stored == value => Ok(()),
         _ => Err("RustDesk service did not confirm the change".to_owned()),
     }
 }
