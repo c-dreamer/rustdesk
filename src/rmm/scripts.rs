@@ -90,6 +90,15 @@ pub fn add(name: &str, body: &str, schedule_secs: Option<u64>) -> ResultType<()>
     save(&scripts)
 }
 
+/// The optional schedule argument of `--add-script`: absent means on demand only.
+pub fn parse_schedule_secs(arg: Option<&str>) -> Result<Option<u64>, String> {
+    match arg.map(str::parse::<u64>) {
+        None => Ok(None),
+        Some(Ok(secs)) if secs > 0 => Ok(Some(secs)),
+        Some(_) => Err("Schedule must be a positive number of seconds".to_owned()),
+    }
+}
+
 pub fn list() -> ResultType<Value> {
     let names: Vec<_> = load()?
         .into_iter()
@@ -412,6 +421,15 @@ mod tests {
         let out = run_limited(sh("head -c 200000 /dev/zero | tr '\\0' a"), SCRIPT_TIMEOUT).unwrap();
         assert!(out.ends_with("[output truncated]"));
         assert!(out.len() < OUTPUT_CAP + 64);
+    }
+
+    #[test]
+    fn schedule_argument_must_be_positive_seconds() {
+        assert_eq!(parse_schedule_secs(None), Ok(None));
+        assert_eq!(parse_schedule_secs(Some("3600")), Ok(Some(3600)));
+        for bad in ["0", "-5", "1h", "", " 60"] {
+            assert!(parse_schedule_secs(Some(bad)).is_err(), "{bad}");
+        }
     }
 
     #[test]

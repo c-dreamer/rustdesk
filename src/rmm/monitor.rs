@@ -86,13 +86,15 @@ fn newly_breached(
 
 #[cfg(windows)]
 fn down_services() -> Vec<String> {
-    Config::get_option(WATCH_SERVICES_OPTION)
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
+    watch_list(&Config::get_option(WATCH_SERVICES_OPTION))
         .filter(|s| !crate::platform::is_service_running(s))
         .map(str::to_owned)
         .collect()
+}
+
+#[cfg(any(windows, test))]
+fn watch_list(raw: &str) -> impl Iterator<Item = &str> {
+    raw.split(',').map(str::trim).filter(|s| !s.is_empty())
 }
 
 #[cfg(not(windows))]
@@ -339,6 +341,13 @@ mod tests {
         );
         assert!(newly_breached(&mut active, vec![]).is_empty());
         assert_eq!(newly_breached(&mut active, vec![cpu(85)]), vec![cpu(85)]);
+    }
+
+    #[test]
+    fn watch_list_trims_and_skips_empty_entries() {
+        let names: Vec<_> = watch_list(" Spooler, ,W32Time ,,").collect();
+        assert_eq!(names, ["Spooler", "W32Time"]);
+        assert_eq!(watch_list("").count(), 0);
     }
 
     #[test]

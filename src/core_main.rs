@@ -623,13 +623,13 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             }
             if args.len() == 3 || args.len() == 4 {
-                let schedule_secs = match args.get(3).map(|s| s.parse::<u64>()) {
-                    Some(Ok(0)) | Some(Err(_)) => {
-                        println!("Schedule must be a positive number of seconds");
+                let schedule = args.get(3).map(String::as_str);
+                let schedule_secs = match crate::rmm::scripts::parse_schedule_secs(schedule) {
+                    Ok(secs) => secs,
+                    Err(err) => {
+                        println!("{err}");
                         return None;
                     }
-                    Some(Ok(secs)) => Some(secs),
-                    None => None,
                 };
                 match std::fs::read_to_string(&args[2]) {
                     Ok(body) => match crate::rmm::scripts::add(&args[1], &body, schedule_secs) {
