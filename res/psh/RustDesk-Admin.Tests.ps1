@@ -17,11 +17,18 @@ $explicit = & (Get-Module RustDesk-Admin) { Find-RustDeskExe -Path "C:\fake\rust
 Assert ($explicit -eq "C:\fake\rustdesk.exe") "explicit -Exe path is returned as-is"
 
 # Find-RustDeskExe: no path and nothing installed throws rather than returning empty/null.
-try {
-    & (Get-Module RustDesk-Admin) { Find-RustDeskExe -Path $null }
-    Assert $false "should have thrown when rustdesk.exe is not found"
-} catch {
-    Assert $true "throws when rustdesk.exe is not found anywhere"
+# Only checkable where RustDesk is not installed, since it would find the real exe.
+$installed = (Test-Path "$env:ProgramFiles\RustDesk\rustdesk.exe") -or
+    (Test-Path "${env:ProgramFiles(x86)}\RustDesk\rustdesk.exe")
+if ($installed) {
+    Write-Host "SKIP: RustDesk is installed, so Find-RustDeskExe finds it"
+} else {
+    try {
+        & (Get-Module RustDesk-Admin) { Find-RustDeskExe -Path $null }
+        Assert $false "should have thrown when rustdesk.exe is not found"
+    } catch {
+        Assert $true "throws when rustdesk.exe is not found anywhere"
+    }
 }
 
 # Get-RustDeskOptions: a non-JSON gate message (e.g. "Installation and
@@ -44,6 +51,42 @@ Assert ((& $fmt 'C:\Users\John Smith\x.ps1') -eq '"C:\Users\John Smith\x.ps1"') 
 Assert ((& $fmt 'C:\My Dir\') -eq '"C:\My Dir\\"') "trailing backslash is doubled inside quotes"
 Assert ((& $fmt 'say "hi"') -eq '"say \"hi\""') "embedded quotes are escaped"
 Assert ((& $fmt '') -eq '""') "empty argument is kept as an empty quoted string"
+
+# Setters: rustdesk.exe always exits 0, so a gate message must become an error.
+# Mock and call share one module scriptblock, so the mock is in the call's scope chain.
+$mod = Get-Module RustDesk-Admin
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { "Installation and administrative privileges required!" }
+        Enable-RustDeskMonitor -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $true }
+Assert $threw "a setter reports a gate message as an error"
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { "" }
+        Set-RustDeskOption -Name rmm-cpu-threshold -Value "" -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $true }
+Assert (-not $threw) "Set-RustDeskOption accepts an empty value, and empty output is success"
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { "Done!" }
+        Set-RustDeskId -Id "123456789" -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $true }
+Assert (-not $threw) "'Done!' is success for --set-id"
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { "Changing ID is disabled!" }
+        Set-RustDeskId -Id "123456789" -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $true }
+Assert $threw "any other --set-id output is an error"
 
 if ($failures -gt 0) {
     Write-Error "$failures check(s) failed"

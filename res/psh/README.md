@@ -24,6 +24,11 @@ Uninstall-RustDeskApp -Confirm   # prompts before uninstalling
 
 Auto-detects `rustdesk.exe` under `Program Files`; pass `-Exe <path>` to override.
 Admin CLI commands require an elevated shell — run PowerShell as Administrator.
+Setters return nothing on success and write an error otherwise (rustdesk.exe always exits 0,
+so the module checks its output), so `-ErrorAction Stop` works in deployment scripts.
+
+If the module was downloaded, Windows' default execution policy blocks it; run
+`Unblock-File .\RustDesk-Admin.psm1` once, or start PowerShell with `-ExecutionPolicy Bypass`.
 
 ## Script library
 
@@ -47,7 +52,7 @@ Write tools: `run_script`, and `set_option` (monitoring options only: `rmm-monit
 until a human turns them on. The agent cannot turn them on itself.
 
 ```powershell
-rustdesk --option rmm-agent-write Y   # enable write tools; N to disable again
+Set-RustDeskOption -Name rmm-agent-write -Value Y   # enable write tools; N to disable again
 ```
 
 `--option` only works on an installed RustDesk, from an elevated shell. The same switch is in
@@ -140,5 +145,5 @@ Any other MCP client: launch `rustdesk --mcp` as a stdio server.
 ## Self-check
 
 ```powershell
-powershell -File RustDesk-Admin.Tests.ps1
+powershell -ExecutionPolicy Bypass -File RustDesk-Admin.Tests.ps1
 ```
