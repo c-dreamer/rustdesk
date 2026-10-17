@@ -49,7 +49,16 @@ machine headlessly, on Windows, Linux or macOS.
 
 Read tools, always on: `get_status`, `get_inventory`, `get_alerts`, `list_scripts`, `list_peers`.
 Write tools: `run_script`, and `set_option` (monitoring options only: `rmm-monitor-enabled` and the CPU, memory, disk and watched-service settings). These are refused
-until a human turns them on. The agent cannot turn them on itself.
+until a human turns them on, and no MCP tool can turn them on. This is a guard for
+well-behaved agents, not a sandbox: an agent that also has a shell as the same user is that
+user, and can do whatever the user's RustDesk can.
+
+Watched services and the installed-software list are Windows only. On macOS and Linux,
+alerts go to `get_alerts`, the Tools tab and `rmm_alerts.log`, with no desktop notification.
+
+On an installed Windows RustDesk the script library is admin-only (see above), so
+`list_scripts` and `run_script` work only when the agent itself runs elevated, and then run
+scripts as that admin; only the scheduler runs them as SYSTEM.
 
 ```powershell
 Set-RustDeskOption -Name rmm-agent-write -Value Y   # enable write tools; N to disable again
@@ -93,8 +102,9 @@ opencode (`opencode.json`):
 ### Linux and macOS
 
 Same server, different binary path. The snippets use the Linux path, `/usr/bin/rustdesk`; on
-macOS, replace it with `/Applications/RustDesk.app/Contents/MacOS/RustDesk`. On Linux,
-`sudo rustdesk --option rmm-agent-write Y` (or the Tools tab switch) opens the write gate.
+macOS, replace it with `/Applications/RustDesk.app/Contents/MacOS/RustDesk`. On Linux and
+macOS, `sudo <that path> --option rmm-agent-write Y` (or the Tools tab switch) opens the write
+gate.
 
 Claude Code:
 

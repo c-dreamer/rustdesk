@@ -116,7 +116,7 @@ fn tool_list() -> Vec<Value> {
         tool("get_status", "RustDesk ID and version of this machine.", none.clone(), &[]),
         tool(
             "get_inventory",
-            "Hardware, OS and installed software on this machine.",
+            "Hardware and OS of this machine, plus installed software (Windows only; empty elsewhere).",
             none.clone(),
             &[],
         ),
@@ -136,7 +136,7 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "set_option",
-            "Set a monitoring option: rmm-monitor-enabled (Y/N), rmm-cpu-threshold, rmm-mem-threshold, rmm-disk-threshold (1-100, empty to clear) or rmm-watch-services (comma-separated). Requires the rmm-agent-write option.",
+            "Set a monitoring option: rmm-monitor-enabled (Y/N), rmm-cpu-threshold, rmm-mem-threshold, rmm-disk-threshold (1-100, empty to clear) or rmm-watch-services (Windows only; comma-separated names of installed services). Requires the rmm-agent-write option.",
             json!({"name": {"type": "string"}, "value": {"type": "string"}}),
             &["name", "value"],
         ),
@@ -195,6 +195,9 @@ fn check_settable(key: &str, value: &str) -> Result<(), String> {
         // Each name ends up in a RustDesk-branded toast, so an agent gets service-name
         // characters only, not free text.
         keys::OPTION_RMM_WATCH_SERVICES => {
+            if !cfg!(windows) {
+                return Err(format!("{key} is only monitored on Windows"));
+            }
             value.len() <= 1024
                 && value.split(',').map(str::trim).all(|name| {
                     name.is_empty()
@@ -224,10 +227,10 @@ fn service_exists(name: &str) -> bool {
         .is_ok()
 }
 
-// The watch list is only read on Windows, so elsewhere a name never reaches a toast.
+// Unreachable: check_settable refuses the watch list off Windows, where it is never read.
 #[cfg(not(windows))]
 fn service_exists(_name: &str) -> bool {
-    true
+    false
 }
 
 fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Result<String, String> {
@@ -314,8 +317,6 @@ mod tests {
             ("rmm-monitor-enabled", "N"),
             ("rmm-cpu-threshold", "90"),
             ("rmm-disk-threshold", ""),
-            ("rmm-watch-services", "Spooler, W32Time"),
-            ("rmm-watch-services", "MSSQL$SQLEXPRESS,"),
         ] {
             assert!(check_settable(key, value).is_ok(), "{key}={value}");
         }
@@ -334,6 +335,21 @@ mod tests {
         ] {
             assert!(check_settable(key, value).is_err(), "{key}={value}");
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn watch_list_accepts_installed_services_only() {
+        let key = keys::OPTION_RMM_WATCH_SERVICES;
+        assert!(check_settable(key, "Spooler, W32Time,").is_ok());
+        assert!(check_settable(key, "Your_PC_is_locked._Call_1-888-555-0199").is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn watch_list_is_refused_off_windows() {
+        let err = check_settable(keys::OPTION_RMM_WATCH_SERVICES, "Spooler").unwrap_err();
+        assert!(err.contains("only monitored on Windows"), "{err}");
     }
 
     #[test]

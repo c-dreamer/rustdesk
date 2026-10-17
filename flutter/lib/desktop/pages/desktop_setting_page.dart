@@ -2731,11 +2731,13 @@ class _ToolsState extends State<_Tools> {
             )),
           ],
         ).marginSymmetric(vertical: 4.0),
-        TextField(
-          controller: _watchServicesCtrl,
-          decoration: InputDecoration(
-              labelText: translate('Watched services (comma-separated)')),
-        ).marginSymmetric(vertical: 4.0),
+        // Service checks exist only on Windows (monitor.rs down_services).
+        if (isWindows)
+          TextField(
+            controller: _watchServicesCtrl,
+            decoration: InputDecoration(
+                labelText: translate('Watched services (comma-separated)')),
+          ).marginSymmetric(vertical: 4.0),
         ElevatedButton(
           onPressed: () async {
             await bind.mainSetOption(
