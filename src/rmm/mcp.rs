@@ -4,7 +4,7 @@
 //! change state require the `rmm-agent-write` option, which the agent cannot set itself.
 
 use base::config::keys;
-use hbb_common::{config, tokio};
+use hbb_common::tokio;
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
@@ -224,39 +224,13 @@ fn check_settable(key: &str, value: &str) -> Result<(), String> {
 
 fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Result<String, String> {
     match name {
-        "get_status" => {
-            Ok(json!({"id": crate::ipc::get_id(), "version": crate::VERSION}).to_string())
-        }
+        "get_status" => Ok(crate::rmm::cli::status().to_string()),
         "get_inventory" => Ok(crate::rmm::inventory::snapshot().to_string()),
-        "get_alerts" => {
-            let options = crate::ipc::get_options();
-            let config: serde_json::Map<String, Value> = options
-                .iter()
-                .filter(|(k, _)| {
-                    k.starts_with("rmm-") && k.as_str() != keys::OPTION_RMM_RECENT_ALERTS
-                })
-                .map(|(k, v)| (k.clone(), Value::from(v.as_str())))
-                .collect();
-            let recent_alerts = crate::rmm::monitor::recent_alerts();
-            Ok(json!({"config": config, "recent_alerts": recent_alerts}).to_string())
-        }
+        "get_alerts" => Ok(crate::rmm::cli::alerts_status().to_string()),
         "list_scripts" => crate::rmm::scripts::list()
             .map(|v| v.to_string())
             .map_err(|err| err.to_string()),
-        "list_peers" => {
-            let peers: Vec<Value> = config::PeerConfig::peers(None)
-                .into_iter()
-                .map(|(id, _, p)| {
-                    json!({
-                        "id": id,
-                        "username": p.info.username,
-                        "hostname": p.info.hostname,
-                        "platform": p.info.platform,
-                    })
-                })
-                .collect();
-            Ok(Value::from(peers).to_string())
-        }
+        "list_peers" => Ok(crate::rmm::cli::peers().to_string()),
         "run_script" => {
             require_write(write_allowed)?;
             crate::rmm::scripts::run(str_arg(args, "name")?).map_err(|err| err.to_string())

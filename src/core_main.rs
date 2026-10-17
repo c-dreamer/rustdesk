@@ -477,13 +477,7 @@ pub fn core_main() -> Option<Vec<String>> {
             println!("{}", crate::ipc::get_id());
             return None;
         } else if args[0] == "--status" {
-            println!(
-                "{}",
-                serde_json::json!({
-                    "id": crate::ipc::get_id(),
-                    "version": crate::VERSION,
-                })
-            );
+            println!("{}", crate::rmm::cli::status());
             return None;
         } else if args[0] == "--set-id" {
             if is_cli_setting_change_disabled() {
@@ -559,18 +553,7 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             return None;
         } else if args[0] == "--list-peers" {
-            let peers: Vec<_> = config::PeerConfig::peers(None)
-                .drain(..)
-                .map(|(id, _, p)| {
-                    serde_json::json!({
-                        "id": id,
-                        "username": p.info.username,
-                        "hostname": p.info.hostname,
-                        "platform": p.info.platform,
-                    })
-                })
-                .collect();
-            println!("{}", serde_json::to_string(&peers).unwrap_or_default());
+            println!("{}", crate::rmm::cli::peers());
             return None;
         } else if args[0] == "--inventory" {
             println!(
@@ -579,31 +562,13 @@ pub fn core_main() -> Option<Vec<String>> {
             );
             return None;
         } else if args[0] == "--alerts-status" {
-            let options = crate::ipc::get_options();
-            let threshold_keys = [
-                keys::OPTION_RMM_MONITOR_ENABLED,
-                keys::OPTION_RMM_CPU_THRESHOLD,
-                keys::OPTION_RMM_MEM_THRESHOLD,
-                keys::OPTION_RMM_DISK_THRESHOLD,
-                keys::OPTION_RMM_WATCH_SERVICES,
-            ];
-            let thresholds: std::collections::HashMap<_, _> = threshold_keys
-                .iter()
-                .map(|k| (k.to_string(), options.get(*k).cloned().unwrap_or_default()))
-                .collect();
-            println!(
-                "{}",
-                serde_json::json!({"config": thresholds, "recent_alerts": crate::rmm::monitor::recent_alerts()})
-            );
+            println!("{}", crate::rmm::cli::alerts_status());
             return None;
         } else if args[0] == "--mcp" {
             crate::rmm::mcp::serve(is_cli_setting_change_disabled());
             return None;
         } else if args[0] == "--list-scripts" {
-            match crate::rmm::scripts::list() {
-                Ok(list) => println!("{}", list),
-                Err(err) => println!("{}", err),
-            }
+            println!("{}", crate::rmm::cli::list_scripts());
             return None;
         } else if args[0] == "--run-script" {
             if is_cli_setting_change_disabled() {
@@ -611,10 +576,7 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             }
             if args.len() == 2 {
-                match crate::rmm::scripts::run(&args[1]) {
-                    Ok(output) => println!("{}", output),
-                    Err(err) => println!("{}", err),
-                }
+                println!("{}", crate::rmm::cli::run_script(&args[1]));
             }
             return None;
         } else if args[0] == "--add-script" {
@@ -624,11 +586,9 @@ pub fn core_main() -> Option<Vec<String>> {
             }
             if args.len() == 3 || args.len() == 4 {
                 let schedule = args.get(3).map(String::as_str);
-                let schedule_secs = match crate::rmm::scripts::parse_schedule_secs(schedule) {
-                    Ok(secs) => secs,
-                    Err(err) => {
-                        println!("{err}");
-                        return None;
+                println!("{}", crate::rmm::cli::add_script(&args[1], &args[2], schedule));
+            }
+            return None;
                     }
                 };
                 match std::fs::read_to_string(&args[2]) {
