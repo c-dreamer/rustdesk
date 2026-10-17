@@ -987,7 +987,6 @@ fn is_user_main_ipc_scope_cli_command(args: &[String]) -> bool {
             | Some("--list-options")
             | Some("--status")
             | Some("--alerts-status")
-            | Some("--mcp")
             | Some("--assign")
             | Some("--deploy")
     )
@@ -1038,7 +1037,6 @@ mod tests {
             "--list-options",
             "--status",
             "--alerts-status",
-            "--mcp",
             "--assign",
             "--deploy",
         ] {
@@ -1053,6 +1051,9 @@ mod tests {
             "--check-hwcodec-config",
             "--connect",
             "--list-peers",
+            // Under sudo the write gate must come from root's own config, not from a
+            // user-run server whose options any user process can change.
+            "--mcp",
         ] {
             assert!(!is_user_main_ipc_scope_cli_command(&args(&[command])));
         }

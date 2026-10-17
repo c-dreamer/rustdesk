@@ -160,6 +160,34 @@ fn require_write(write_allowed: &dyn Fn() -> bool) -> Result<(), String> {
     }
 }
 
+/// Changes one key on the server, or fails. `ipc::set_option` is unsuitable here: when
+/// the read times out it pushes this process's whole local option map to the service,
+/// keys unchecked, and it reports nothing when the write does not arrive.
+#[tokio::main(flavor = "current_thread")]
+async fn set_server_option(key: &str, value: &str) -> Result<(), String> {
+    use crate::ipc::Data;
+    let unreachable =
+        |err: hbb_common::anyhow::Error| format!("RustDesk service unreachable: {err}");
+    let mut conn = crate::ipc::connect(1000, "").await.map_err(unreachable)?;
+    conn.send(&Data::Options(None)).await.map_err(unreachable)?;
+    let mut options = match conn.next_timeout(1000).await {
+        Ok(Some(Data::Options(Some(options)))) => options,
+        _ => return Err("RustDesk service did not return its options".to_owned()),
+    };
+    if value.is_empty() {
+        options.remove(key);
+    } else {
+        options.insert(key.to_owned(), value.to_owned());
+    }
+    conn.send(&Data::Options(Some(options)))
+        .await
+        .map_err(unreachable)?;
+    match conn.next_timeout(1000).await {
+        Ok(Some(Data::Options(None))) => Ok(()),
+        _ => Err("RustDesk service did not confirm the change".to_owned()),
+    }
+}
+
 /// Agents may tune monitoring only. Script execution (rmm-scripts-enabled runs the
 /// library as SYSTEM) and the agent's own gate stay with a human.
 fn check_settable(key: &str, value: &str) -> Result<(), String> {
@@ -227,7 +255,7 @@ fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Resu
             let key = str_arg(args, "name")?;
             let value = str_arg(args, "value")?;
             check_settable(key, value)?;
-            crate::ipc::set_option(key, value);
+            set_server_option(key, value)?;
             Ok("Done!".to_owned())
         }
         _ => Err(format!("Unknown tool: {name}")),
