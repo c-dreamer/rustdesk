@@ -254,6 +254,9 @@ pub async fn tray_alert_watch() {
     let mut timer = tokio::time::interval(POLL_INTERVAL);
     loop {
         timer.tick().await;
+        // A clock stepped back (NTP, VM restore) would otherwise hide every new alert
+        // until it caught up with the newest one shown.
+        since = since.min(hbb_common::get_time());
         let options = crate::ipc::get_options_async().await;
         if options
             .get(keys::OPTION_RMM_MONITOR_ENABLED)

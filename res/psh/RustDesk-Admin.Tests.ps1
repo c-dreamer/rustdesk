@@ -116,6 +116,23 @@ $count = (& $mod {
 } | Measure-Object).Count
 Assert ($count -eq 2) "a JSON array reaches the pipeline item by item"
 
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { "Settings are disabled!" }
+        Invoke-RustDeskScript -Name x -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $true }
+Assert $threw "--run-script's settings-disabled message is an error"
+$threw = try {
+    & $mod {
+        function Invoke-RustDeskExe { $null }
+        Get-RustDeskPeers -Exe "C:\fake\rustdesk.exe" -ErrorAction Stop
+    } | Out-Null
+    $false
+} catch { $true }
+Assert $threw "empty output from a JSON command is an error"
+
 if ($failures -gt 0) {
     Write-Error "$failures check(s) failed"
     exit 1

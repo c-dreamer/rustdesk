@@ -62,6 +62,10 @@ function Wait-RustDeskExe {
 function ConvertFrom-RustDeskJson {
     # A failure is plain text or {"error": ...}; surface it instead of a JSON parse error.
     param([AllowNull()][AllowEmptyString()][string]$Text)
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        Write-Error 'rustdesk.exe printed nothing'
+        return
+    }
     try {
         $parsed = $Text | ConvertFrom-Json -ErrorAction Stop
     } catch {
@@ -251,6 +255,8 @@ function Invoke-RustDeskScript {
     $out = Invoke-RustDeskExe -Exe $exe -ArgumentList "--run-script", $Name -ExeOnly
     if ("$out".StartsWith('Error: ')) {
         Write-Error "$out".Substring(7).Trim()
+    } elseif ("$out".Trim() -eq 'Settings are disabled!') {
+        Write-Error "$out".Trim()
     } else {
         $out
     }
