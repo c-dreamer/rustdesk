@@ -201,7 +201,8 @@ fn check_settable(key: &str, value: &str) -> Result<(), String> {
                         || (name.len() <= 256
                             && name
                                 .chars()
-                                .all(|c| c.is_ascii_alphanumeric() || "_.$-".contains(c)))
+                                .all(|c| c.is_ascii_alphanumeric() || "_.$-".contains(c))
+                            && service_exists(name))
                 })
         }
         _ => return Err(format!("Option '{key}' cannot be set by an agent")),
@@ -211,6 +212,22 @@ fn check_settable(key: &str, value: &str) -> Result<(), String> {
     } else {
         Err(format!("Invalid value for {key}: '{value}'"))
     }
+}
+
+/// Characters alone still allow a sentence (`Call_us_now`); requiring an installed
+/// service keeps agent-chosen text out of the toast.
+#[cfg(windows)]
+fn service_exists(name: &str) -> bool {
+    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(format!("SYSTEM\\CurrentControlSet\\Services\\{name}"))
+        .is_ok()
+}
+
+// The watch list is only read on Windows, so elsewhere a name never reaches a toast.
+#[cfg(not(windows))]
+fn service_exists(_name: &str) -> bool {
+    true
 }
 
 fn call_tool(name: &str, args: &Value, write_allowed: &dyn Fn() -> bool) -> Result<String, String> {
