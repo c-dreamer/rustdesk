@@ -985,6 +985,9 @@ fn is_user_main_ipc_scope_cli_command(args: &[String]) -> bool {
             | Some("--config")
             | Some("--option")
             | Some("--list-options")
+            | Some("--status")
+            | Some("--alerts-status")
+            | Some("--mcp")
             | Some("--assign")
             | Some("--deploy")
     )
@@ -1033,6 +1036,9 @@ mod tests {
             "--config",
             "--option",
             "--list-options",
+            "--status",
+            "--alerts-status",
+            "--mcp",
             "--assign",
             "--deploy",
         ] {
@@ -1046,7 +1052,6 @@ mod tests {
             "--cm",
             "--check-hwcodec-config",
             "--connect",
-            "--status",
             "--list-peers",
         ] {
             assert!(!is_user_main_ipc_scope_cli_command(&args(&[command])));
