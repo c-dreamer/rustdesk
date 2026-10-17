@@ -13,17 +13,25 @@ pub fn snapshot() -> Value {
 
 #[cfg(windows)]
 fn installed_software() -> Vec<Value> {
-    use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+    use winreg::{
+        enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE},
+        RegKey,
+    };
 
-    const UNINSTALL_PATHS: [&str; 2] = [
-        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-        "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
-    ];
+    const UNINSTALL_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+    const UNINSTALL_PATH_WOW64: &str =
+        "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
 
     let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    // Per-user installs (e.g. VS Code user setup); the calling user's hive, so SYSTEM sees none.
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let mut apps = Vec::new();
-    for path in UNINSTALL_PATHS {
-        let Ok(uninstall) = hklm.open_subkey(path) else {
+    for (hive, path) in [
+        (&hklm, UNINSTALL_PATH),
+        (&hklm, UNINSTALL_PATH_WOW64),
+        (&hkcu, UNINSTALL_PATH),
+    ] {
+        let Ok(uninstall) = hive.open_subkey(path) else {
             continue;
         };
         for name in uninstall.enum_keys().flatten() {
@@ -47,6 +55,7 @@ fn installed_software() -> Vec<Value> {
         }
     }
     apps.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+    apps.dedup();
     apps
 }
 
