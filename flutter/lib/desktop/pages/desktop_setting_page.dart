@@ -2776,7 +2776,7 @@ class _ToolsState extends State<_Tools> {
               dense: true,
               title: Text('${s['name']}'),
               subtitle: s['schedule_secs'] != null
-                  ? Text('${translate('every')} ${s['schedule_secs']}s')
+                  ? Text(translate('every {${s['schedule_secs']}}s'))
                   : null,
               trailing: ElevatedButton(
                 onPressed: () async {

@@ -795,7 +795,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Recent alerts", ""),
         ("No alerts", ""),
         ("Enable scheduled scripts", ""),
-        ("every", ""),
+        ("every {}s", ""),
         ("Run", ""),
         ("Add script", ""),
         ("PowerShell / shell body", ""),
