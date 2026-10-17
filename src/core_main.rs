@@ -589,17 +589,6 @@ pub fn core_main() -> Option<Vec<String>> {
                 println!("{}", crate::rmm::cli::add_script(&args[1], &args[2], schedule));
             }
             return None;
-                    }
-                };
-                match std::fs::read_to_string(&args[2]) {
-                    Ok(body) => match crate::rmm::scripts::add(&args[1], &body, schedule_secs) {
-                        Ok(()) => println!("Done!"),
-                        Err(err) => println!("{}", err),
-                    },
-                    Err(err) => println!("Failed to read {}: {}", args[2], err),
-                }
-            }
-            return None;
         } else if args[0] == "--assign" {
             if config::Config::no_register_device() {
                 println!("Cannot assign an unregistrable device!");
