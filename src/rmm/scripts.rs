@@ -165,6 +165,9 @@ fn script_command(path: &std::path::Path) -> std::process::Command {
 /// and reports a non-zero exit as an error carrying stderr.
 fn run_limited(mut cmd: std::process::Command, timeout: std::time::Duration) -> ResultType<String> {
     use std::process::Stdio;
+    // Own process group, so a timeout can kill everything the script started.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -178,6 +181,7 @@ fn run_limited(mut cmd: std::process::Command, timeout: std::time::Duration) -> 
             break Some(status);
         }
         if started.elapsed() >= timeout {
+            kill_tree(child.id());
             if let Err(err) = child.kill() {
                 log::warn!("rmm: failed to kill timed-out script: {err}");
             }
@@ -196,6 +200,28 @@ fn run_limited(mut cmd: std::process::Command, timeout: std::time::Duration) -> 
             Err(anyhow!("Script exited with {status}: {}", stderr.trim()))
         }
         Some(_) => Ok(stdout.trim().to_owned()),
+    }
+}
+
+#[cfg(windows)]
+fn kill_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    let result = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(winapi::um::winbase::CREATE_NO_WINDOW)
+        .output();
+    if let Err(err) = result {
+        log::warn!("rmm: taskkill failed for script {pid}: {err}");
+    }
+}
+
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    let result = std::process::Command::new("kill")
+        .args(["-KILL", "--", &format!("-{pid}")])
+        .output();
+    if let Err(err) = result {
+        log::warn!("rmm: kill failed for script group {pid}: {err}");
     }
 }
 
@@ -350,6 +376,34 @@ mod tests {
             .to_string();
         assert!(err.contains("timed out"), "{err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn timeout_kills_processes_the_script_started() {
+        let pid_file = std::env::temp_dir().join(format!("rmm-bg-{}", std::process::id()));
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        assert!(run_limited(sh(&script), std::time::Duration::from_millis(500)).is_err());
+        let pid = std::fs::read_to_string(&pid_file).unwrap();
+        std::fs::remove_file(&pid_file).ok();
+        // Gone, or a zombie nobody has reaped yet (no init reaper in some containers).
+        let dead = || {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", pid.trim()])
+                .output()
+                .unwrap();
+            let stat = String::from_utf8_lossy(&out.stdout);
+            stat.trim().is_empty() || stat.trim_start().starts_with('Z')
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !dead() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            dead(),
+            "background child {} survived the timeout",
+            pid.trim()
+        );
     }
 
     #[cfg(not(windows))]
