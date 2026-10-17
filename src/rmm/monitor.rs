@@ -209,11 +209,37 @@ fn new_alerts(recent: &str, since: i64, seen: Option<&str>) -> Vec<String> {
 /// monitoring is on; enabling monitoring later takes effect at the next logon.
 #[cfg(windows)]
 pub fn tray_alert_watch_hidden() {
-    let monitoring = crate::ipc::get_options()
-        .get(keys::OPTION_RMM_MONITOR_ENABLED)
-        .map_or(false, |v| v == "Y");
-    if crate::platform::is_installed() && monitoring {
-        tray_alert_watch();
+    // The visible tray takes this lock in make_tray; check_process("--tray") alone
+    // misses duplicates (#15689), and a hidden duplicate would now live forever.
+    if !crate::platform::is_installed()
+        || !crate::platform::windows::try_lock_tray_single_instance()
+    {
+        return;
+    }
+    // At logon the service may not answer yet, and ipc::get_options would then fall
+    // back to this user's config, which never holds the option; wait for a real answer.
+    for _ in 0..24 {
+        match server_monitoring_enabled() {
+            Some(true) => return tray_alert_watch(),
+            Some(false) => return,
+            None => std::thread::sleep(std::time::Duration::from_secs(5)),
+        }
+    }
+    log::warn!("rmm: service IPC did not answer; no monitoring alerts in this session");
+}
+
+#[cfg(windows)]
+#[tokio::main(flavor = "current_thread")]
+async fn server_monitoring_enabled() -> Option<bool> {
+    let mut conn = crate::ipc::connect(1000, "").await.ok()?;
+    conn.send(&crate::ipc::Data::Options(None)).await.ok()?;
+    match conn.next_timeout(1000).await {
+        Ok(Some(crate::ipc::Data::Options(Some(options)))) => Some(
+            options
+                .get(keys::OPTION_RMM_MONITOR_ENABLED)
+                .map_or(false, |v| v == "Y"),
+        ),
+        _ => None,
     }
 }
 
